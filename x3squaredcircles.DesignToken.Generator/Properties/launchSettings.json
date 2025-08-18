@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "x3squaredcircles.DesignToken.Generator": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}

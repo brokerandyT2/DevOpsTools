@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "x3squaredcircles.DataLink.Container": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}

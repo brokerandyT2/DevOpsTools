@@ -1,0 +1,106 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>x3squaredcircles.DesignToken.Generator</RootNamespace>
+    <AssemblyName>design-token-generator</AssemblyName>
+
+    <!-- Container Configuration -->
+    <EnableSdkContainerSupport>true</EnableSdkContainerSupport>
+    <ContainerImageName>design-token-generator</ContainerImageName>
+    <ContainerImageTag>latest</ContainerImageTag>
+    <ContainerBaseImage>mcr.microsoft.com/dotnet/runtime:8.0-alpine</ContainerBaseImage>
+    <ContainerWorkingDirectory>/app</ContainerWorkingDirectory>
+
+    <!-- Application Metadata -->
+    <Version>1.0.0</Version>
+    <Authors>3xSquaredCircles</Authors>
+    <Company>3xSquaredCircles</Company>
+    <Product>Design Token Generator</Product>
+    <Description>Containerized design token extraction and generation tool for pipeline automation with multi-platform support and licensing integration</Description>
+
+    <!-- Build Configuration -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarningsAsErrors />
+    <NoWarn>CS8618</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Core Dependencies -->
+    <PackageReference Include="Microsoft.AspNetCore.Http" Version="2.3.0" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="8.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.App" />
+    <!-- HTTP Client for Design Platform APIs and License Server -->
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.0" />
+
+    <!-- JSON Serialization for Design Tokens -->
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+
+    <!-- YAML Support for Token Output -->
+    <PackageReference Include="YamlDotNet" Version="15.1.1" />
+
+    <!-- XML Support for Token Output -->
+    <PackageReference Include="System.Xml.Linq" />
+
+    <!-- Template Engine for Code Generation -->
+    <PackageReference Include="Scriban" Version="5.9.0" />
+
+    <!-- File System Operations -->
+    <PackageReference Include="System.IO.Abstractions" Version="20.0.15" />
+
+    <!-- Color Processing for Design Tokens -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.1" />
+
+    <!-- Regular Expressions for Pattern Matching -->
+    <PackageReference Include="System.Text.RegularExpressions" Version="4.3.1" />
+  </ItemGroup>
+
+  <!-- Container Build Configuration -->
+  <ItemGroup>
+    <ContainerEnvironmentVariable Include="DOTNET_RUNNING_IN_CONTAINER" Value="true" />
+    <ContainerEnvironmentVariable Include="DOTNET_SYSTEM_GLOBALIZATION_INVARIANT" Value="true" />
+  </ItemGroup>
+
+  <!-- Container Tools and Dependencies -->
+  <ItemGroup>
+    <!-- Install git for repository operations -->
+    <ContainerCommand Include="apk add --no-cache git" />
+    <!-- Install curl for API testing -->
+    <ContainerCommand Include="apk add --no-cache curl" />
+  </ItemGroup>
+
+  <!-- Volume Mounts for Pipeline Integration -->
+  <ItemGroup>
+    <!-- Source code mount point -->
+    <ContainerMount Include="/src" Type="bind" />
+  </ItemGroup>
+
+  <!-- Development settings -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <ContainerImageTag>dev</ContainerImageTag>
+  </PropertyGroup>
+
+  <!-- Runtime settings for container -->
+  <PropertyGroup>
+    <ContainerEntrypoint>/app/design-token-generator</ContainerEntrypoint>
+  </PropertyGroup>
+
+  <!-- Template Files for Code Generation -->
+  <ItemGroup>
+    <EmbeddedResource Include="Templates\**\*.scriban" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Docs\android\readme.md" />
+    <EmbeddedResource Include="Docs\ios\readme.md" />
+    <EmbeddedResource Include="Docs\web\readme.md" />
+    <EmbeddedResource Include="Docs\readme.md" />
+  </ItemGroup>
+
+</Project>

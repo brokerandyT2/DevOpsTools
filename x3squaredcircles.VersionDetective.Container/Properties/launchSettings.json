@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "x3squaredcircles.VersionDetective.Container": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}

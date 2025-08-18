@@ -1,0 +1,91 @@
+﻿/**
+ * This file provides the documentation and constants for using the 3SC API Assembler DSL with JavaScript.
+ * In JavaScript, metadata is attached using JSDoc-style comments (`/** ... */`) which are parsed by the 3sc-assembler tool.
+ */
+
+// --- Core Enums for the 3SC Assembler DSL ---
+// Use these string values in your JSDoc comments.
+
+/**
+ * @readonly
+ * @enum {string}
+ */
+const Cloud = {
+    Azure: 'Azure',
+    AWS: 'AWS',
+    GCP: 'GCP',
+    Oracle: 'Oracle',
+    MuleSoft: 'MuleSoft',
+    // ... other clouds
+    Local: 'Local',
+};
+
+/**
+ * @readonly
+ * @enum {string}
+ */
+const DeploymentPattern = {
+    Functions: 'Functions',
+    ApiGateway: 'ApiGateway',
+    AppService: 'AppService',
+    // ... other patterns
+    WebAPI: 'WebAPI',
+};
+
+/**
+ * @readonly
+ * @enum {string}
+ */
+const SecretProvider = {
+    AzureKeyVault: 'AzureKeyVault',
+    AWSSecretsManager: 'AWSSecretsManager',
+    GCPSecretManager: 'GCPSecretManager',
+    HashiCorpVault: 'HashiCorpVault',
+};
+
+
+/*
+--- Example Usage in your JavaScript code ---
+
+// In a 'deploymentDefinition.js' file:
+
+/**
+ * Defines the CustomerServices deployment group.
+ * @group {cloud: "Azure", pattern: "Functions"}
+ */
+export const CustomerServices = "CustomerServices";
+
+/**
+ * Defines the Authentication contract.
+ * @contract {implementedBy: "security.JwtAuthService", forGroup: "CustomerServices"}
+ */
+export const Authentication = "IAuthenticationHooks";
+
+
+// In a 'customerService.js' file:
+
+/**
+ * The customer service business logic.
+ * @apiEndpoint /customers
+ * @deployTo CustomerServices
+ * @requiresConnection {provider: "AzureKeyVault", contract: "PrimaryDb"}
+ */
+export class CustomerService {
+    
+    /**
+     * Gets a customer by their ID.
+     * @httpGet /{id}
+     * @requires {contract: "IAuthenticationHooks", method: "validateToken"}
+     */
+    getCustomer(id) {
+        // ... business logic
+    }
+}
+*/
+
+// It is recommended to export the enums to use them in your application for better consistency.
+module.exports = {
+    Cloud,
+    DeploymentPattern,
+    SecretProvider
+};

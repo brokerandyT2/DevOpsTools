@@ -1,0 +1,85 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>x3squaredcircles.VersionDetective.Container</RootNamespace>
+    <AssemblyName>version-detective</AssemblyName>
+
+    <!-- Container Configuration -->
+    <EnableSdkContainerSupport>true</EnableSdkContainerSupport>
+    <ContainerImageName>version-detective</ContainerImageName>
+    <ContainerImageTag>latest</ContainerImageTag>
+    <ContainerBaseImage>mcr.microsoft.com/dotnet/runtime:8.0-alpine</ContainerBaseImage>
+    <ContainerWorkingDirectory>/app</ContainerWorkingDirectory>
+
+    <!-- Application Metadata -->
+    <Version>1.0.0</Version>
+    <Authors>3xSquaredCircles</Authors>
+    <Company>3xSquaredCircles</Company>
+    <Product>Version Detective Container</Product>
+    <Description>Containerized version calculation tool for pipeline automation with multi-language support and licensing integration</Description>
+
+    <!-- Build Configuration -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarningsAsErrors />
+    <NoWarn>CS8618</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Core Dependencies -->
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="8.0.0" />
+
+    <!-- HTTP Client for License Server Communication -->
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.0" />
+
+    <!-- JSON Serialization -->
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+
+    <!-- Reflection for Assembly Analysis -->
+    <PackageReference Include="System.Reflection.Metadata" Version="8.0.0" />
+
+    <!-- Web utilities for HTML encoding -->
+    <PackageReference Include="System.Text.Encodings.Web" Version="8.0.0" />
+  </ItemGroup>
+
+  <!-- Embedded Resources -->
+  <ItemGroup>
+    <EmbeddedResource Include="Docs\readme.md" />
+  </ItemGroup>
+
+  <!-- Container Build Configuration -->
+  <ItemGroup>
+    <ContainerEnvironmentVariable Include="DOTNET_RUNNING_IN_CONTAINER" Value="true" />
+    <ContainerEnvironmentVariable Include="DOTNET_SYSTEM_GLOBALIZATION_INVARIANT" Value="true" />
+  </ItemGroup>
+
+  <!-- Container Tools and Dependencies -->
+  <ItemGroup>
+    <!-- Install git for repository analysis -->
+    <ContainerCommand Include="apk add --no-cache git" />
+  </ItemGroup>
+
+  <!-- Volume Mounts for Pipeline Integration -->
+  <ItemGroup>
+    <!-- Source code mount point -->
+    <ContainerMount Include="/src" Type="bind" />
+  </ItemGroup>
+
+  <!-- Development settings -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <ContainerImageTag>dev</ContainerImageTag>
+  </PropertyGroup>
+
+  <!-- Runtime settings for container -->
+  <PropertyGroup>
+    <ContainerEntrypoint>/app/version-detective</ContainerEntrypoint>
+  </PropertyGroup>
+
+</Project>

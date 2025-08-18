@@ -1,0 +1,12 @@
+﻿{
+    "version": 1,
+    "patterns": [
+        {
+            "code": "CORP_001",
+            "severity": "info",
+            "regex": "(Phoenix|Griffin|Cerberus)-[A-Z]{3}",
+            "description": "Internal Project Codename",
+            "tags": [ "internal_project", "confidential" ]
+        }
+    ]
+}

@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "x3squaredcircles.SQLSentry.Container": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+﻿{
+    "version": 1,
+    "exclusions": [
+        {
+            "rule": "CTX_CORP_001",
+            "exclude": [
+                {
+                    "table": "DevSandbox_ProjectTests",
+                    "column": "*"
+                }
+            ]
+        },
+        {
+            "rule": "CTX_PII_001",
+            "exclude": [
+                {
+                    "table": "MarketingLeads_Archived",
+                    "column": "*"
+                },
+                {
+                    "table": "UserFeedback",
+                    "column": "UserProvidedName"
+                }
+            ]
+        }
+    ]
+}

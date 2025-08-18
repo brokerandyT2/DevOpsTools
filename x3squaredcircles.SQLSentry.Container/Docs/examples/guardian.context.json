@@ -1,0 +1,39 @@
+﻿{
+    "version": 1,
+    "joinKeyPatterns": [
+        "*ID",
+        "*Identifier",
+        "SessionKey"
+    ],
+    "policy": {
+        "detectors": {
+            "PII_003": {
+                "enabled": false,
+                "reason": "Our company does not operate in the US and does not process SSNs."
+            }
+        },
+        "combinationRules": {
+            "CTX_PII_001": {
+                "enabled": true,
+                "depth": 3,
+                "reason": "Overriding default depth from 2 to 3 to catch wider relationships."
+            },
+            "CTX_PHI_001": {
+                "enabled": false,
+                "reason": "This is not a healthcare application; PHI rules are not applicable."
+            }
+        }
+    },
+    "customCombinationRules": [
+        {
+            "code": "CTX_CORP_001",
+            "severity": "error",
+            "description": "Customer Identity linked to Internal Project Data",
+            "depth": 3,
+            "combinationOfCodes": [
+                "PII_001",
+                "CORP_001"
+            ]
+        }
+    ]
+}

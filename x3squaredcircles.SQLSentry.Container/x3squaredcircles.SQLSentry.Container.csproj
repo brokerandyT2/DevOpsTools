@@ -1,0 +1,47 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <!-- Target the latest Long-Term Support (LTS) version of .NET for stability and container optimization. -->
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+
+    <!-- Enable modern C# features and best practices for cleaner code. -->
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <!-- Define the final executable name and the root namespace for the project. -->
+    <AssemblyName>guardian</AssemblyName>
+    <RootNamespace>x3squaredcircles.SQLSentry.Container</RootNamespace>
+  </PropertyGroup>
+
+  <!-- 
+    This ItemGroup embeds all files within the 'Docs' directory into the final assembly.
+    This allows the HttpServerService to serve the README and example JSON files
+    directly from memory, ensuring the container is fully self-contained.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Docs\**\*" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Remove="Docs\examples\guardian.context.json" />
+  </ItemGroup>
+
+  <!-- Define all external library dependencies (NuGet packages). -->
+  <ItemGroup>
+    <!-- Core application hosting, dependency injection, and logging framework. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" />
+
+    <!-- Database provider clients for multi-dialect scanning support. -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.8" />
+    <PackageReference Include="Npgsql" Version="8.0.2" />
+    <PackageReference Include="MySql.Data" Version="8.4.0" />
+    <PackageReference Include="Oracle.ManagedDataAccess.Core" Version="3.21.130" />
+
+    <!-- Key Vault provider clients for secure, multi-cloud secret resolution. -->
+    <PackageReference Include="Azure.Identity" Version="1.11.0" />
+    <PackageReference Include="Azure.Security.KeyVault.Secrets" Version="4.6.0" />
+    <PackageReference Include="AWSSDK.SecretsManager" Version="3.7.304.25" />
+  </ItemGroup>
+
+</Project>

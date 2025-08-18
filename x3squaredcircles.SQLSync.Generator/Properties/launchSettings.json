@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "x3squaredcircles.SQLSync.Generator": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}

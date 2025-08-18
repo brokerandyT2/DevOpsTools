@@ -1,0 +1,80 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>x3squaredcircles.License.Server</RootNamespace>
+    <AssemblyName>x3squaredcircles.License.Server</AssemblyName>
+
+    <!-- Container Configuration -->
+    <EnableSdkContainerSupport>true</EnableSdkContainerSupport>
+    <ContainerImageName>licensing-container</ContainerImageName>
+    <ContainerImageTag>latest</ContainerImageTag>
+    <ContainerBaseImage>mcr.microsoft.com/dotnet/aspnet:8.0-alpine</ContainerBaseImage>
+    <ContainerWorkingDirectory>/app</ContainerWorkingDirectory>
+
+    <!-- Application Metadata -->
+    <Version>1.0.0</Version>
+    <Authors>3xSquaredCircles</Authors>
+    <Company>3xSquaredCircles</Company>
+    <Product>Licensing Container</Product>
+    <Description>Containerized licensing server for pipeline tools with concurrent usage enforcement and burst capacity management</Description>
+
+    <!-- Build Configuration -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarningsAsErrors />
+    <NoWarn>CS8618</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ASP.NET Core and Web API -->
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.4" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="8.0.1" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.4.0" />
+
+    <!-- Entity Framework Core with SQLite -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.4" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.4" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+
+    <!-- Logging -->
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="8.0.0" />
+
+    <!-- JSON Serialization -->
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+
+  <!-- Container Build Configuration -->
+  <ItemGroup>
+    <ContainerEnvironmentVariable Include="ASPNETCORE_URLS" Value="http://+:8080" />
+    <ContainerEnvironmentVariable Include="ASPNETCORE_ENVIRONMENT" Value="Production" />
+    <ContainerEnvironmentVariable Include="DOTNET_RUNNING_IN_CONTAINER" Value="true" />
+    <ContainerEnvironmentVariable Include="LC_SCHEMA_VERSION" Value="1.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ContainerPort Include="8080" Type="tcp" />
+  </ItemGroup>
+
+  <!-- Embedded License Configuration (Example - to be replaced per customer) -->
+  <ItemGroup>
+    <ContainerEnvironmentVariable Include="LC_MAX_CONCURRENT" Value="5" />
+    <ContainerEnvironmentVariable Include="LC_BURST_MULTIPLIER" Value="2" />
+    <ContainerEnvironmentVariable Include="LC_BURST_ALLOWANCE" Value="2" />
+    <ContainerEnvironmentVariable Include="LC_TOOLS_LICENSED" Value="[&quot;version-detective&quot;,&quot;version-calculator&quot;,&quot;sql-schema-generator&quot;,&quot;api-generator&quot;,&quot;release-notes-generator&quot;]" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="readme.md" />
+  </ItemGroup>
+
+  <!-- Development settings -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <ContainerImageTag>dev</ContainerImageTag>
+  </PropertyGroup>
+
+</Project>

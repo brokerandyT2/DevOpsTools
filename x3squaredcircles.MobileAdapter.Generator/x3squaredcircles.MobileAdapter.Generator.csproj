@@ -1,0 +1,31 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Docs\csharp\readme.md" />
+    <EmbeddedResource Include="Docs\go\readme.md" />
+    <EmbeddedResource Include="Docs\javascript\readme.md" />
+    <EmbeddedResource Include="Docs\java\readme.md" />
+    <EmbeddedResource Include="Docs\python\readme.md" />
+    <EmbeddedResource Include="Docs\readme.md" />
+    <EmbeddedResource Include="Docs\typescript\readme.md" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Http" Version="2.3.0" />
+    <PackageReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.22.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\x3squaredcircles.DesignToken.Generator\x3squaredcircles.DesignToken.Generator.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "x3squaredcircles.License.Server": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}

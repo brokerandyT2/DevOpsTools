@@ -25,6 +25,7 @@ namespace x3squaredcircles.SQLSentry.Container
 
         public static async Task<int> Main(string[] args)
         {
+            WritePipelineToolsLogAsync();
             var host = Host.CreateDefaultBuilder(args)
                 .ConfigureServices((context, services) =>
                 {
@@ -98,5 +99,18 @@ namespace x3squaredcircles.SQLSentry.Container
                 logger.LogInformation("🛡️  {ToolName} shutting down.", ToolName);
             }
         }
+        private static async Task WritePipelineToolsLogAsync()
+        {
+            try
+            {
+                ForensicLogger.WriteForensicLogEntryAsync(ToolName, ToolVersion);
+            }
+            catch (Exception ex)
+            {
+                // This is a non-critical operation; log to console and continue.
+                Console.WriteLine($"[WARN] Could not write to pipeline-tools.log: {ex.Message}");
+            }
+        }
     }
+
 }

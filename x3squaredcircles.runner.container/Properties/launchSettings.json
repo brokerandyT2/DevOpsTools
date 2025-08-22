@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "x3squaredcircles.runner.container": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}

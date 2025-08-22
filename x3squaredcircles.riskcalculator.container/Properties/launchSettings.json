@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "x3squaredcircles.riskcalculator.container": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}

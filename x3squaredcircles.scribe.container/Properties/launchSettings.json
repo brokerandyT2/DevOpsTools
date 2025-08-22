@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "x3squaredcircles.scribe.container": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}

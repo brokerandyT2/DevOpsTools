@@ -1,8 +1,8 @@
 ﻿using Microsoft.Extensions.Logging;
 using System;
-using System.Threading;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
-using System.Xml.Schema;
 using x3squaredcircles.SQLSync.Generator.Models;
 
 namespace x3squaredcircles.SQLSync.Generator.Services
@@ -14,7 +14,7 @@ namespace x3squaredcircles.SQLSync.Generator.Services
 
     public class SqlSchemaOrchestrator : ISqlSchemaOrchestrator
     {
-        private readonly IConfigurationService _configurationService;
+        private readonly SqlSchemaConfiguration _config;
         private readonly ILicenseClientService _licenseClientService;
         private readonly IKeyVaultService _keyVaultService;
         private readonly IGitOperationsService _gitOperationsService;
@@ -28,10 +28,11 @@ namespace x3squaredcircles.SQLSync.Generator.Services
         private readonly IDeploymentExecutionService _deploymentExecutionService;
         private readonly IFileOutputService _fileOutputService;
         private readonly ITagTemplateService _tagTemplateService;
+        private readonly IControlPointService _controlPointService;
         private readonly ILogger<SqlSchemaOrchestrator> _logger;
 
         public SqlSchemaOrchestrator(
-            IConfigurationService configurationService,
+            SqlSchemaConfiguration config,
             ILicenseClientService licenseClientService,
             IKeyVaultService keyVaultService,
             IGitOperationsService gitOperationsService,
@@ -45,9 +46,10 @@ namespace x3squaredcircles.SQLSync.Generator.Services
             IDeploymentExecutionService deploymentExecutionService,
             IFileOutputService fileOutputService,
             ITagTemplateService tagTemplateService,
+            IControlPointService controlPointService,
             ILogger<SqlSchemaOrchestrator> logger)
         {
-            _configurationService = configurationService;
+            _config = config;
             _licenseClientService = licenseClientService;
             _keyVaultService = keyVaultService;
             _gitOperationsService = gitOperationsService;
@@ -61,300 +63,105 @@ namespace x3squaredcircles.SQLSync.Generator.Services
             _deploymentExecutionService = deploymentExecutionService;
             _fileOutputService = fileOutputService;
             _tagTemplateService = tagTemplateService;
+            _controlPointService = controlPointService;
             _logger = logger;
         }
 
         public async Task<int> RunAsync()
         {
-            SqlSchemaConfiguration? config = null;
-            LicenseSession? licenseSession = null;
-            CancellationTokenSource? heartbeatCancellation = null;
-
+            DeploymentResult deploymentResult = null;
             try
             {
-                _logger.LogInformation("🗄️ SQL Schema Generator starting...");
+                var mutableConfig = await _controlPointService.InterceptAsync(ControlPointStage.OnRunStart, _config);
 
-                // 1. Parse and validate configuration
-                config = _configurationService.GetConfiguration();
-                _configurationService.ValidateConfiguration(config);
-                _configurationService.LogConfiguration(config);
+                ValidateConfiguration(mutableConfig);
+                LogConfigurationSummary(mutableConfig);
 
-                // 2. Resolve secrets from key vault if needed
-                if (config.KeyVault != null)
+                if (mutableConfig.Vault.Type != VaultType.None)
                 {
-                    await _keyVaultService.ResolveSecretsAsync(config);
+                    await _keyVaultService.ResolveSecretsAsync(mutableConfig);
                 }
 
-                // 3. Acquire license
-                _logger.LogInformation("Step 1/10: Acquiring license...");
-                licenseSession = await _licenseClientService.AcquireLicenseAsync(config);
+                _logger.LogInformation("Step 1/8: Discovering entities...");
+                var discoveredEntities = await _entityDiscoveryService.DiscoverEntitiesAsync(mutableConfig);
+                discoveredEntities = await _controlPointService.InterceptAsync(ControlPointStage.AfterDiscovery, discoveredEntities);
 
-                if (licenseSession == null)
+                _logger.LogInformation("Step 2/8: Analyzing current database schema...");
+                var currentSchema = await _schemaAnalysisService.AnalyzeCurrentSchemaAsync(mutableConfig);
+
+                _logger.LogInformation("Step 3/8: Generating target schema...");
+                var targetSchema = await _schemaAnalysisService.GenerateTargetSchemaAsync(discoveredEntities, mutableConfig);
+
+                _logger.LogInformation("Step 4/8: Validating schema changes...");
+                var validationResult = await _schemaValidationService.ValidateSchemaChangesAsync(currentSchema, targetSchema, mutableConfig);
+                validationResult = await _controlPointService.InterceptAsync(ControlPointStage.AfterValidation, validationResult);
+
+                _logger.LogInformation("Step 5/8: Assessing deployment risk...");
+                var riskAssessment = await _riskAssessmentService.AssessRiskAsync(validationResult, mutableConfig);
+                riskAssessment = await _controlPointService.InterceptAsync(ControlPointStage.AfterRiskAssessment, riskAssessment);
+
+                _logger.LogInformation("Step 6/8: Generating deployment plan...");
+                var deploymentPlan = await _deploymentPlanService.GenerateDeploymentPlanAsync(validationResult, riskAssessment, mutableConfig);
+
+                _logger.LogInformation("Step 7/8: Generating SQL deployment script...");
+                var sqlScript = await _sqlGenerationService.GenerateDeploymentScriptAsync(deploymentPlan, mutableConfig);
+
+                if (mutableConfig.Operation.Mode == OperationMode.Deploy && !mutableConfig.Operation.NoOp)
                 {
-                    _logger.LogError("Failed to acquire license - entering NOOP mode");
-                    return await RunNoOpModeAsync(config);
-                }
-
-                // 4. Start license heartbeat
-                heartbeatCancellation = new CancellationTokenSource();
-                _ = Task.Run(() => _licenseClientService.StartHeartbeatAsync(licenseSession, heartbeatCancellation.Token));
-
-                // 5. Validate git repository and configure authentication
-                _logger.LogInformation("Step 2/10: Configuring git operations...");
-                await ValidateAndConfigureGitAsync(config);
-
-                // 6. Discover entities marked with tracking attribute
-                _logger.LogInformation("Step 3/10: Discovering entities with attribute: {TrackAttribute}...", config.TrackAttribute);
-                var discoveredEntities = await _entityDiscoveryService.DiscoverEntitiesAsync(config);
-
-                // 7. Analyze current database schema
-                _logger.LogInformation("Step 4/10: Analyzing current database schema...");
-                var currentSchema = await _schemaAnalysisService.AnalyzeCurrentSchemaAsync(config);
-
-                // 8. Generate target schema from entities
-                _logger.LogInformation("Step 5/10: Generating target schema from entities...");
-                var targetSchema = await _schemaAnalysisService.GenerateTargetSchemaAsync(discoveredEntities, config);
-
-                // 9. Validate schema changes
-                _logger.LogInformation("Step 6/10: Validating schema changes...");
-                var validationResult = await _schemaValidationService.ValidateSchemaChangesAsync(currentSchema, targetSchema, config);
-
-                // 10. Assess risk level
-                _logger.LogInformation("Step 7/10: Assessing deployment risk...");
-                var riskAssessment = await _riskAssessmentService.AssessRiskAsync(validationResult, config);
-
-                // 11. Generate 29-phase deployment plan
-                _logger.LogInformation("Step 8/10: Generating deployment plan...");
-                var deploymentPlan = await _deploymentPlanService.GenerateDeploymentPlanAsync(validationResult, riskAssessment, config);
-
-                // 12. Generate SQL deployment script
-                _logger.LogInformation("Step 9/10: Generating SQL deployment script...");
-                var sqlScript = await _sqlGenerationService.GenerateDeploymentScriptAsync(deploymentPlan, config);
-
-                // 13. Generate tag template
-                var tagResult = await _tagTemplateService.GenerateTagAsync(config, discoveredEntities);
-
-                // 14. Generate output files and reports
-                _logger.LogInformation("Step 10/10: Generating output files...");
-                await _fileOutputService.GenerateOutputsAsync(config, discoveredEntities, currentSchema, targetSchema,
-                    validationResult, riskAssessment, deploymentPlan, sqlScript, tagResult, licenseSession);
-
-                // 15. Execute deployment if in execute mode
-                if (config.Operation.Mode == "execute" && !config.Operation.ValidateOnly && !config.Operation.NoOp)
-                {
-                    await ExecuteDeploymentAsync(config, deploymentPlan, sqlScript, riskAssessment, tagResult);
-                }
-
-                // 16. Display results
-                DisplayResults(config, discoveredEntities, riskAssessment, deploymentPlan, tagResult, licenseSession);
-
-                var exitCode = DetermineExitCode(riskAssessment);
-                _logger.LogInformation("✅ SQL Schema Generator completed with exit code: {ExitCode}", exitCode);
-                return exitCode;
-            }
-            catch (SqlSchemaException ex)
-            {
-                _logger.LogError("❌ SQL Schema Generator failed: {Message}", ex.Message);
-                return (int)ex.ExitCode;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ Unexpected error in SQL Schema Generator");
-                return (int)SqlSchemaExitCode.InvalidConfiguration;
-            }
-            finally
-            {
-                // Clean up
-                try
-                {
-                    heartbeatCancellation?.Cancel();
-                    if (licenseSession != null)
+                    _logger.LogInformation("Step 8/8: Executing deployment...");
+                    deploymentPlan = await _controlPointService.InterceptAsync(ControlPointStage.BeforeBackup, deploymentPlan);
+                    if (!mutableConfig.Backup.SkipBackup)
                     {
-                        await _licenseClientService.ReleaseLicenseAsync(licenseSession);
+                        await _backupService.CreateBackupAsync(mutableConfig);
+                    }
+
+                    var executionPayload = new { DeploymentPlan = deploymentPlan, SqlScript = sqlScript };
+                    await _controlPointService.InterceptAsync(ControlPointStage.BeforeExecution, executionPayload);
+
+                    deploymentResult = await _deploymentExecutionService.ExecuteDeploymentAsync(deploymentPlan, sqlScript, mutableConfig);
+                    if (!deploymentResult.Success)
+                    {
+                        throw new SqlSchemaException(SqlSchemaExitCode.DeploymentExecutionFailure, deploymentResult.ErrorMessage);
                     }
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Error during cleanup");
-                }
-            }
-        }
 
-        private async Task<int> RunNoOpModeAsync(SqlSchemaConfiguration config)
-        {
-            try
-            {
-                _logger.LogWarning("⚠️ Running in NO-OP mode due to license unavailability");
-                _logger.LogInformation("Analysis will be performed but no changes will be applied");
-
-                // Perform analysis without license
-                await ValidateAndConfigureGitAsync(config);
-                var discoveredEntities = await _entityDiscoveryService.DiscoverEntitiesAsync(config);
-                var currentSchema = await _schemaAnalysisService.AnalyzeCurrentSchemaAsync(config);
-                var targetSchema = await _schemaAnalysisService.GenerateTargetSchemaAsync(discoveredEntities, config);
-                var validationResult = await _schemaValidationService.ValidateSchemaChangesAsync(currentSchema, targetSchema, config);
-                var riskAssessment = await _riskAssessmentService.AssessRiskAsync(validationResult, config);
-                var deploymentPlan = await _deploymentPlanService.GenerateDeploymentPlanAsync(validationResult, riskAssessment, config);
-                var sqlScript = await _sqlGenerationService.GenerateDeploymentScriptAsync(deploymentPlan, config);
-                var tagResult = await _tagTemplateService.GenerateTagAsync(config, discoveredEntities);
-
-                // Generate outputs but mark as NOOP
-                await _fileOutputService.GenerateOutputsAsync(config, discoveredEntities, currentSchema, targetSchema,
-                    validationResult, riskAssessment, deploymentPlan, sqlScript, tagResult, null);
-
-                // Display results with NOOP warning
-                DisplayNoOpResults(config, discoveredEntities, riskAssessment, deploymentPlan);
-
-                var exitCode = DetermineExitCode(riskAssessment);
-                _logger.LogWarning("✅ SQL Schema Generator completed in NO-OP mode with exit code: {ExitCode}", exitCode);
-                return exitCode;
+                await _controlPointService.NotifyAsync(ControlPointStage.Completion, ControlPointEvent.OnSuccess, deploymentPlan);
+                return (int)SqlSchemaExitCode.Success;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Error during NO-OP analysis");
-                return (int)SqlSchemaExitCode.InvalidConfiguration;
+                var exitCode = ex is SqlSchemaException schemaEx ? schemaEx.ExitCode : SqlSchemaExitCode.UnhandledException;
+                _logger.LogError(ex, "Orchestration failed with exit code {ExitCode}: {Message}", exitCode, ex.Message);
+                await _controlPointService.NotifyAsync(ControlPointStage.Completion, ControlPointEvent.OnFailure, new { ErrorMessage = ex.Message, ExitCode = exitCode });
+                return (int)exitCode;
             }
         }
 
-        private async Task ValidateAndConfigureGitAsync(SqlSchemaConfiguration config)
+        private void ValidateConfiguration(SqlSchemaConfiguration config)
         {
-            var isValidRepo = await _gitOperationsService.IsValidGitRepositoryAsync();
-            if (!isValidRepo)
+            var errors = new List<string>();
+            var langCount = new[] { config.Language.CSharp, config.Language.Java, config.Language.Go, config.Language.Python, config.Language.TypeScript }.Count(l => l);
+            if (langCount != 1) errors.Add("Exactly one SQLSYNC_LANGUAGE_* variable must be set to 'true'.");
+            if (string.IsNullOrWhiteSpace(config.TrackAttribute)) errors.Add("SQLSYNC_TRACK_ATTRIBUTE must be set.");
+            if (string.IsNullOrWhiteSpace(config.Database.Server)) errors.Add("SQLSYNC_DB_SERVER must be set.");
+            if (string.IsNullOrWhiteSpace(config.Database.DatabaseName)) errors.Add("SQLSYNC_DB_NAME must be set.");
+            if (config.Authentication.AuthMode == AuthMode.Password && string.IsNullOrWhiteSpace(config.Authentication.Username)) errors.Add("SQLSYNC_DB_USERNAME must be set for Password authentication.");
+
+            if (errors.Any())
             {
-                throw new SqlSchemaException(SqlSchemaExitCode.GitOperationFailure,
-                    "Not a valid git repository. Ensure the tool is running in a git repository.");
-            }
-
-            await _gitOperationsService.ConfigureGitAuthenticationAsync(config);
-            _logger.LogInformation("✓ Git repository validated and configured");
-        }
-
-        private async Task ExecuteDeploymentAsync(SqlSchemaConfiguration config, DeploymentPlan deploymentPlan,
-            SqlScript sqlScript, RiskAssessment riskAssessment, TagTemplateResult tagResult)
-        {
-            try
-            {
-                _logger.LogInformation("Executing database deployment...");
-
-                // Create backup before deployment if enabled
-                if (config.Backup.BackupBeforeDeployment && !config.Operation.SkipBackup)
-                {
-                    _logger.LogInformation("Creating database backup...");
-                    await _backupService.CreateBackupAsync(config);
-                }
-
-                // Execute deployment
-                var deploymentResult = await _deploymentExecutionService.ExecuteDeploymentAsync(deploymentPlan, sqlScript, config);
-
-                if (deploymentResult.Success)
-                {
-                    // Create git tag after successful deployment
-                    await _gitOperationsService.CreateTagAsync(tagResult.GeneratedTag,
-                        $"Schema deployment v{tagResult.TokenValues.GetValueOrDefault("version", "1.0.0")}");
-
-                    _logger.LogInformation("✓ Database deployment completed successfully");
-                }
-                else
-                {
-                    throw new SqlSchemaException(SqlSchemaExitCode.DeploymentExecutionFailure,
-                        $"Deployment failed: {deploymentResult.ErrorMessage}");
-                }
-            }
-            catch (SqlSchemaException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Deployment execution failed");
-                throw new SqlSchemaException(SqlSchemaExitCode.DeploymentExecutionFailure,
-                    $"Deployment execution failed: {ex.Message}", ex);
+                throw new SqlSchemaException(SqlSchemaExitCode.InvalidConfiguration, $"Configuration validation failed: {string.Join(", ", errors)}");
             }
         }
 
-        private int DetermineExitCode(RiskAssessment riskAssessment)
+        private void LogConfigurationSummary(SqlSchemaConfiguration config)
         {
-            return riskAssessment.OverallRiskLevel switch
-            {
-                RiskLevel.Safe => (int)SqlSchemaExitCode.Success,
-                RiskLevel.Warning => (int)SqlSchemaExitCode.WarningApprovalRequired,
-                RiskLevel.Risky => (int)SqlSchemaExitCode.RiskyDualApprovalRequired,
-                _ => (int)SqlSchemaExitCode.Success
-            };
-        }
+            if (config.Logging.LogLevel > LogLevel.Information && !config.Logging.Verbose) return;
 
-        private void DisplayResults(SqlSchemaConfiguration config, EntityDiscoveryResult discoveredEntities,
-            RiskAssessment riskAssessment, DeploymentPlan deploymentPlan, TagTemplateResult tagResult,
-            LicenseSession licenseSession)
-        {
-            Console.WriteLine();
-            Console.WriteLine("🗄️ SQL Schema Generator Results");
-            Console.WriteLine();
-
-            Console.WriteLine($"Language:           {config.Language.GetSelectedLanguage().ToUpperInvariant()}");
-            Console.WriteLine($"Database Provider:  {config.Database.GetSelectedProvider().ToUpperInvariant()}");
-            Console.WriteLine($"Track Attribute:    {config.TrackAttribute}");
-            Console.WriteLine($"Entities Discovered: {discoveredEntities.Entities.Count}");
-            Console.WriteLine($"Deployment Phases:  {deploymentPlan.Phases.Count}");
-            Console.WriteLine($"Risk Level:         {riskAssessment.OverallRiskLevel.ToString().ToUpperInvariant()}");
-            Console.WriteLine($"Generated Tag:      {tagResult.GeneratedTag}");
-            Console.WriteLine();
-
-            if (riskAssessment.OverallRiskLevel != RiskLevel.Safe)
-            {
-                Console.WriteLine($"⚠️ RISK ASSESSMENT: {riskAssessment.OverallRiskLevel.ToString().ToUpperInvariant()} OPERATIONS DETECTED ⚠️");
-                if (riskAssessment.OverallRiskLevel == RiskLevel.Warning)
-                {
-                    Console.WriteLine("This deployment requires review by 1 approver before execution");
-                }
-                else if (riskAssessment.OverallRiskLevel == RiskLevel.Risky)
-                {
-                    Console.WriteLine("This deployment requires dual approval before execution");
-                }
-
-                Console.WriteLine("Risk Summary:");
-                foreach (var risk in riskAssessment.RiskFactors.Take(3))
-                {
-                    Console.WriteLine($"  - {risk.Description} (Risk: {risk.RiskLevel})");
-                }
-                Console.WriteLine();
-            }
-
-            Console.WriteLine($"Repository:     {config.RepoUrl}");
-            Console.WriteLine($"Branch:         {config.Branch}");
-            Console.WriteLine($"Environment:    {config.Environment.Environment.ToUpperInvariant()}");
-            Console.WriteLine($"Mode:           {config.Operation.Mode.ToUpperInvariant()}");
-            Console.WriteLine($"Database:       {config.Database.Server}/{config.Database.DatabaseName}");
-
-            if (licenseSession?.BurstMode == true)
-            {
-                Console.WriteLine();
-                Console.WriteLine("⚠️ BURST MODE USAGE NOTICE ⚠️");
-                Console.WriteLine($"This generation used burst capacity ({licenseSession.BurstCountRemaining} remaining this month)");
-                Console.WriteLine("Consider purchasing additional licenses to avoid future interruptions");
-            }
-        }
-
-        private void DisplayNoOpResults(SqlSchemaConfiguration config, EntityDiscoveryResult discoveredEntities,
-            RiskAssessment riskAssessment, DeploymentPlan deploymentPlan)
-        {
-            Console.WriteLine();
-            Console.WriteLine("🗄️ SQL Schema Generator Results (NO-OP MODE)");
-            Console.WriteLine("   ⚠️ License unavailable - analysis only, no changes applied");
-            Console.WriteLine();
-
-            Console.WriteLine($"Language:           {config.Language.GetSelectedLanguage().ToUpperInvariant()}");
-            Console.WriteLine($"Database Provider:  {config.Database.GetSelectedProvider().ToUpperInvariant()}");
-            Console.WriteLine($"Track Attribute:    {config.TrackAttribute}");
-            Console.WriteLine($"Entities Analyzed:  {discoveredEntities.Entities.Count}");
-            Console.WriteLine($"Deployment Phases:  {deploymentPlan.Phases.Count}");
-            Console.WriteLine($"Risk Level:         {riskAssessment.OverallRiskLevel.ToString().ToUpperInvariant()}");
-            Console.WriteLine();
-
-            Console.WriteLine("⚠️ NO CHANGES WERE APPLIED ⚠️");
-            Console.WriteLine("License server was unavailable - pipeline analysis completed but");
-            Console.WriteLine("no database changes were made and no git operations were performed.");
-            Console.WriteLine();
+            _logger.LogInformation("--- Configuration Summary ---");
+            _logger.LogInformation("Mode: {Mode}, No-Op: {NoOp}", config.Operation.Mode, config.Operation.NoOp);
+            _logger.LogInformation("Database: {Provider} on {Server}/{Database}", config.Database.Provider, config.Database.Server, config.Database.DatabaseName);
+            _logger.LogInformation("Authentication: {AuthMode}", config.Authentication.AuthMode);
+            _logger.LogInformation("-----------------------------");
         }
     }
 }

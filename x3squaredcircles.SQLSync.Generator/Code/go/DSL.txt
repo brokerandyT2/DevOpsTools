@@ -1,0 +1,11 @@
+﻿// The SQLSync Generator DSL for Go is implemented entirely through
+// structured code comments. There is no helper code to include in your project.
+
+// Please refer to the documentation in /Docs/go/readme.md for the correct
+// comment syntax and usage examples.
+
+// Example of a class-level directive:
+// // @ExportToSQL tableName="user_profiles" schemaName="users"
+
+// Example of a property-level directive:
+// // @SqlColumn isPrimaryKey="true" type="INT"

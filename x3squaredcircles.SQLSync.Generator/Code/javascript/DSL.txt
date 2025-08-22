@@ -1,0 +1,20 @@
+﻿/**
+ * The SQLSync Generator DSL for JavaScript is implemented entirely through
+ * structured JSDoc-style comment blocks. There is no helper code to
+ * include in your project.
+ *
+ * Please refer to the documentation in /Docs/javascript/readme.md for the
+ * correct comment syntax and usage examples.
+ *
+ * Example of a class-level JSDoc block:
+ * /**
+ *  * @ExportToSQL
+ *  * @tableName user_profiles
+ *  * @schemaName users
+ *  *\/
+ *
+ * Example of a property-level JSDoc block:
+ * /**
+ *  * @SqlColumn isPrimaryKey=true type=INT
+ *  *\/
+ */

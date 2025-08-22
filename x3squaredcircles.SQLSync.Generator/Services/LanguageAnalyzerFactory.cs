@@ -1,73 +1,64 @@
 ﻿using Microsoft.Extensions.Logging;
 using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Reflection;
 using System.Threading.Tasks;
 using x3squaredcircles.SQLSync.Generator.Models;
 
 namespace x3squaredcircles.SQLSync.Generator.Services
 {
+    /// <summary>
+    /// Defines the contract for a factory that provides the correct language-specific analyzer.
+    /// </summary>
     public interface ILanguageAnalyzerFactory
     {
-        Task<ILanguageAnalyzer> GetAnalyzerAsync(string language);
+        ILanguageAnalyzer GetAnalyzer(string language);
     }
 
+    /// <summary>
+    /// Defines the contract for a language-specific analyzer service.
+    /// </summary>
     public interface ILanguageAnalyzer
     {
         Task<List<DiscoveredEntity>> DiscoverEntitiesAsync(string sourcePath, string trackAttribute);
     }
 
+    /// <summary>
+    /// Factory that provides a language-specific analyzer based on the application configuration.
+    /// It resolves the appropriate analyzer from the dependency injection container.
+    /// </summary>
     public class LanguageAnalyzerFactory : ILanguageAnalyzerFactory
     {
-        private readonly ICSharpAnalyzerService _csharpAnalyzer;
-        private readonly IJavaAnalyzerService _javaAnalyzer;
-        private readonly IPythonAnalyzerService _pythonAnalyzer;
-        private readonly IJavaScriptAnalyzerService _javascriptAnalyzer;
-        private readonly ITypeScriptAnalyzerService _typescriptAnalyzer;
-        private readonly IGoAnalyzerService _goAnalyzer;
+        private readonly IServiceProvider _serviceProvider;
         private readonly ILogger<LanguageAnalyzerFactory> _logger;
 
-        public LanguageAnalyzerFactory(
-            ICSharpAnalyzerService csharpAnalyzer,
-            IJavaAnalyzerService javaAnalyzer,
-            IPythonAnalyzerService pythonAnalyzer,
-            IJavaScriptAnalyzerService javascriptAnalyzer,
-            ITypeScriptAnalyzerService typescriptAnalyzer,
-            IGoAnalyzerService goAnalyzer,
-            ILogger<LanguageAnalyzerFactory> logger)
+        public LanguageAnalyzerFactory(IServiceProvider serviceProvider, ILogger<LanguageAnalyzerFactory> logger)
         {
-            _csharpAnalyzer = csharpAnalyzer;
-            _javaAnalyzer = javaAnalyzer;
-            _pythonAnalyzer = pythonAnalyzer;
-            _javascriptAnalyzer = javascriptAnalyzer;
-            _typescriptAnalyzer = typescriptAnalyzer;
-            _goAnalyzer = goAnalyzer;
+            _serviceProvider = serviceProvider;
             _logger = logger;
         }
 
-        public async Task<ILanguageAnalyzer> GetAnalyzerAsync(string language)
+        public ILanguageAnalyzer GetAnalyzer(string language)
         {
-            _logger.LogDebug("Getting language analyzer for: {Language}", language);
+            _logger.LogDebug("Resolving language analyzer for: {Language}", language);
 
-            return language.ToLowerInvariant() switch
+            Type analyzerType = language.ToLowerInvariant() switch
             {
-                "csharp" => _csharpAnalyzer,
-                "java" => _javaAnalyzer,
-                "python" => _pythonAnalyzer,
-                "javascript" => _javascriptAnalyzer,
-                "typescript" => _typescriptAnalyzer,
-                "go" => _goAnalyzer,
-                _ => throw new SqlSchemaException(SqlSchemaExitCode.InvalidConfiguration,
-                    $"Unsupported language: {language}")
+                "csharp" => typeof(CSharpAnalyzerService),
+                "java" => typeof(JavaAnalyzerService),
+                "python" => typeof(PythonAnalyzerService),
+                "javascript" => typeof(JavaScriptAnalyzerService),
+                "typescript" => typeof(TypeScriptAnalyzerService),
+                "go" => typeof(GoAnalyzerService),
+                _ => throw new SqlSchemaException(SqlSchemaExitCode.InvalidConfiguration, $"Unsupported language: {language}")
             };
+
+            var analyzer = (ILanguageAnalyzer)_serviceProvider.GetService(analyzerType);
+
+            if (analyzer == null)
+            {
+                throw new SqlSchemaException(SqlSchemaExitCode.InvalidConfiguration, $"Could not resolve language analyzer for '{language}'. Ensure it is registered in Program.cs.");
+            }
+
+            return analyzer;
         }
     }
-
-    // C# Analyzer Service
-    
-
-    
-
 }

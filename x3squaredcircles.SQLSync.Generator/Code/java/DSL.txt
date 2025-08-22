@@ -1,0 +1,50 @@
+﻿package com.mycompany.annotations; // It is recommended to change this to your project's package structure.
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+/**
+ * Marks a class as an entity to be synchronized with the database schema.
+ */
+@Retention(RetentionPolicy.SOURCE)
+@Target(ElementType.TYPE)
+public @interface ExportToSQL {
+    /**
+     * Overrides the default table name (which is derived from the class name).
+     * @return The target table name.
+     */
+    String tableName() default "";
+
+    /**
+     * Specifies the database schema for this table.
+     * @return The target schema name.
+     */
+    String schemaName() default "";
+}
+
+/**
+ * Provides detailed SQL-specific configuration for a class field.
+ */
+@Retention(RetentionPolicy.SOURCE)
+@Target(ElementType.FIELD)
+public @interface SqlColumn {
+    /**
+     * Overrides the default SQL data type mapping. E.g., "NVARCHAR(100)", "DECIMAL(18, 2)".
+     * @return The specific SQL data type.
+     */
+    String type() default "";
+
+    /**
+     * Specifies that this property is part of the primary key.
+     * @return True if the column is a primary key.
+     */
+    boolean isPrimaryKey() default false;
+
+    /**
+     * Specifies if the column should be nullable in the database.
+     * @return True if the column is nullable.
+     */
+    boolean isNullable() default true;
+}

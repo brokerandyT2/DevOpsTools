@@ -4,33 +4,49 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.IO;
 using System.Reflection;
-using System.Threading;
 using System.Threading.Tasks;
-using x3squaredcircles.SQLSync.Generator.Services;
+using x3squaredcircles.SQLSync.Generator.Configuration;
 using x3squaredcircles.SQLSync.Generator.Models;
+using x3squaredcircles.SQLSync.Generator.Observability;
+using x3squaredcircles.SQLSync.Generator.Services;
 
 namespace x3squaredcircles.SQLSync.Generator
 {
     class Program
     {
         private static readonly string ToolName = Assembly.GetExecutingAssembly().GetName().Name?.ToString() ?? "sql-schema-generator";
-        private static readonly string ToolVersion = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "1.0.0";
+        private static readonly string ToolVersion = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
 
         static async Task<int> Main(string[] args)
         {
-            // Write to pipeline-tools.log immediately upon startup
             await WritePipelineToolsLogAsync();
+
+            var config = EnvironmentConfigurationLoader.LoadConfiguration();
 
             var host = Host.CreateDefaultBuilder(args)
                 .ConfigureServices((context, services) =>
                 {
-                    // Register core services
-                    services.AddSingleton<IConfigurationService, ConfigurationService>();
+                    services.AddSingleton(config);
+
+                    // Register Orchestrator and Core Services
+                    services.AddSingleton<ISqlSchemaOrchestrator, SqlSchemaOrchestrator>();
                     services.AddSingleton<ILicenseClientService, LicenseClientService>();
                     services.AddSingleton<IKeyVaultService, KeyVaultService>();
                     services.AddSingleton<IGitOperationsService, GitOperationsService>();
+                    services.AddSingleton<IEntityDiscoveryService, EntityDiscoveryService>();
+                    services.AddSingleton<ISchemaAnalysisService, SchemaAnalysisService>();
+                    services.AddSingleton<ISchemaValidationService, SchemaValidationService>();
+                    services.AddSingleton<IRiskAssessmentService, RiskAssessmentService>();
+                    services.AddSingleton<IDeploymentPlanService, DeploymentPlanService>();
+                    services.AddSingleton<ISqlGenerationService, SqlGenerationService>();
+                    services.AddSingleton<IBackupService, BackupService>();
+                    services.AddSingleton<IDeploymentExecutionService, DeploymentExecutionService>();
+                    services.AddSingleton<IFileOutputService, FileOutputService>();
+                    services.AddSingleton<ITagTemplateService, TagTemplateService>();
+                    services.AddSingleton<ICustomScriptService, CustomScriptService>();
+                    services.AddSingleton<IControlPointService, ControlPointService>();
 
-                    // Register language analysis services
+                    // Register Language Analyzer Services and Factory
                     services.AddSingleton<ICSharpAnalyzerService, CSharpAnalyzerService>();
                     services.AddSingleton<IJavaAnalyzerService, JavaAnalyzerService>();
                     services.AddSingleton<IPythonAnalyzerService, PythonAnalyzerService>();
@@ -39,7 +55,7 @@ namespace x3squaredcircles.SQLSync.Generator
                     services.AddSingleton<IGoAnalyzerService, GoAnalyzerService>();
                     services.AddSingleton<ILanguageAnalyzerFactory, LanguageAnalyzerFactory>();
 
-                    // Register database provider services
+                    // Register Database Provider Services and Factory
                     services.AddSingleton<ISqlServerProviderService, SqlServerProviderService>();
                     services.AddSingleton<IPostgreSqlProviderService, PostgreSqlProviderService>();
                     services.AddSingleton<IMySqlProviderService, MySqlProviderService>();
@@ -47,73 +63,63 @@ namespace x3squaredcircles.SQLSync.Generator
                     services.AddSingleton<ISqliteProviderService, SqliteProviderService>();
                     services.AddSingleton<IDatabaseProviderFactory, DatabaseProviderFactory>();
 
-                    // Register schema processing services
-                    services.AddSingleton<IEntityDiscoveryService, EntityDiscoveryService>();
-                    services.AddSingleton<ISchemaAnalysisService, SchemaAnalysisService>();
-                    services.AddSingleton<ISchemaValidationService, SchemaValidationService>();
-                    services.AddSingleton<IRiskAssessmentService, RiskAssessmentService>();
+                    // Register Authentication Strategy Services and Factory
+                    services.AddSingleton<UsernamePasswordStrategy>();
+                    services.AddSingleton<IAuthenticationStrategyFactory, AuthenticationStrategyFactory>();
 
-                    // Register deployment services
-                    services.AddSingleton<IDeploymentPlanService, DeploymentPlanService>();
-                    services.AddSingleton<ISqlGenerationService, SqlGenerationService>();
-                    services.AddSingleton<IBackupService, BackupService>();
-                    services.AddSingleton<IDeploymentExecutionService, DeploymentExecutionService>();
+                    // Register DX Server as a Hosted Service
+                    services.AddHostedService<DocumentationService>();
 
-                    // Register file management services
-                    services.AddSingleton<IFileOutputService, FileOutputService>();
-                    services.AddSingleton<ITagTemplateService, TagTemplateService>();
-                    services.AddSingleton<ICustomScriptService, CustomScriptService>();
-
-                    // Register main orchestrator
-                    services.AddSingleton<ISqlSchemaOrchestrator, SqlSchemaOrchestrator>();
-
-                    // Register this project's own HTTP server service
-                    services.AddSingleton<IHttpServerService, HttpServerService>();
-
-                    // Add HTTP client for external API communication
                     services.AddHttpClient();
                 })
                 .ConfigureLogging((context, logging) =>
                 {
                     logging.ClearProviders();
                     logging.AddConsole();
+                    logging.SetMinimumLevel(config.Logging.LogLevel);
 
-                    var verbose = Environment.GetEnvironmentVariable("VERBOSE");
-                    if (bool.TryParse(verbose, out var isVerbose) && isVerbose)
+                    if (!string.IsNullOrWhiteSpace(config.Observability.FirehoseLogEndpointUrl) &&
+                        !string.IsNullOrWhiteSpace(config.Observability.FirehoseLogEndpointToken))
                     {
-                        logging.SetMinimumLevel(LogLevel.Debug);
-                    }
-                    else
-                    {
-                        logging.SetMinimumLevel(LogLevel.Information);
+                        logging.AddProvider(new FirehoseLoggerProvider(
+                            config,
+                            new ServiceCollection().AddHttpClient().BuildServiceProvider().GetRequiredService<IHttpClientFactory>()
+                        ));
                     }
                 })
                 .Build();
 
             var logger = host.Services.GetRequiredService<ILogger<Program>>();
 
-            CancellationTokenSource? httpServerCancellation = null;
             try
             {
-                logger.LogInformation("🗄️ SQL Schema Generator v{Version} starting...", ToolVersion);
+                await host.StartAsync();
+                logger.LogInformation("🚀 {ToolName} v{ToolVersion} starting...", ToolName, ToolVersion);
 
-                var httpServer = host.Services.GetRequiredService<IHttpServerService>();
-                httpServerCancellation = new CancellationTokenSource();
-                _ = Task.Run(() => httpServer.StartHttpServerAsync(httpServerCancellation.Token), httpServerCancellation.Token);
+                if (!string.IsNullOrWhiteSpace(config.Observability.FirehoseLogEndpointUrl))
+                {
+                    logger.LogInformation("🔥 Firehose logging is active.");
+                }
 
                 var orchestrator = host.Services.GetRequiredService<ISqlSchemaOrchestrator>();
-                return await orchestrator.RunAsync();
+                var result = await orchestrator.RunAsync();
+
+                logger.LogInformation("✅ {ToolName} completed with exit code: {ExitCode}", ToolName, result);
+
+                await host.StopAsync(TimeSpan.FromSeconds(10));
+                return result;
+            }
+            catch (SqlSchemaException ex)
+            {
+                logger.LogError(ex, "A controlled application error occurred: {Message}", ex.Message);
+                await host.StopAsync();
+                return (int)ex.ExitCode;
             }
             catch (Exception ex)
             {
-                logger.LogCritical(ex, "A fatal error occurred in the SQL Schema Generator.");
-                return (int)SqlSchemaExitCode.InvalidConfiguration; // General failure code
-            }
-            finally
-            {
-                httpServerCancellation?.Cancel();
-                httpServerCancellation?.Dispose();
-                logger.LogInformation("SQL Schema Generator shutting down.");
+                logger.LogCritical(ex, "An unhandled exception occurred, terminating the application.");
+                await host.StopAsync();
+                return (int)SqlSchemaExitCode.UnhandledException;
             }
         }
 
@@ -121,15 +127,12 @@ namespace x3squaredcircles.SQLSync.Generator
         {
             try
             {
-                var outputDirectory = "/src"; // Container mount point
-                var logEntry = $"{ToolName}={ToolVersion}";
-                var logFilePath = Path.Combine(outputDirectory, "pipeline-tools.log");
-
-                await File.AppendAllTextAsync(logFilePath, logEntry + Environment.NewLine);
+                ForensicLogger.WriteForensicLogEntryAsync(ToolName, ToolVersion);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[WARN] Failed to write to pipeline-tools.log: {ex.Message}");
+                // This is a non-critical operation; log to console and continue.
+                Console.WriteLine($"[WARN] Could not write to pipeline-tools.log: {ex.Message}");
             }
         }
     }

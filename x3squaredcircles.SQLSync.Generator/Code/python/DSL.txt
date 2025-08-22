@@ -1,0 +1,31 @@
+﻿def export_to_sql(table_name: str = None, schema_name: str = None):
+    """
+    A class decorator that marks a class as an entity to be synchronized with the database schema.
+    This is a no-op decorator at runtime; its only purpose is to provide a static
+    marker and metadata for the generator's parsing process.
+    
+    :param table_name: Optional. Overrides the default table name (which is derived from the class name).
+    :param schema_name: Optional. Specifies the database schema for this table.
+    """
+    def decorator(cls):
+        # Store metadata on the class for potential runtime introspection if needed,
+        # but primarily for the static analysis tool.
+        cls.__sql_sync_table_name__ = table_name
+        cls.__sql_sync_schema_name__ = schema_name
+        return cls
+    return decorator
+
+def sql_column(type: str = None, is_primary_key: bool = False, is_nullable: bool = True):
+    """
+    A property decorator that provides detailed SQL-specific configuration for a class property.
+    This decorator should be applied to a property that also has a type hint.
+    
+    :param type: Optional. Overrides the default SQL data type mapping. E.g., "NVARCHAR(100)", "DECIMAL(18, 2)".
+    :param is_primary_key: Optional. Specifies that this property is part of the primary key.
+    :param is_nullable: Optional. Specifies if the column should be nullable in the database. Defaults to True.
+    """
+    def decorator(prop):
+        # This decorator is primarily for static analysis and doesn't need to modify the property itself.
+        # In a more advanced framework (like SQLAlchemy), this could return a Column object.
+        return prop
+    return decorator

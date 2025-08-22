@@ -1,0 +1,55 @@
+﻿/**
+ * Interface describing the optional parameters for the ExportToSQL class decorator.
+ */
+interface ExportToSQLOptions {
+  /**
+   * Overrides the default table name (which is derived from the class name).
+   */
+  tableName?: string;
+
+  /**
+   * Specifies the database schema for this table.
+   */
+  schemaName?: string;
+}
+
+/**
+ * A class decorator that marks a class for discovery by the SQLSync Generator.
+ * This is a no-op decorator at runtime; its only purpose is to provide a static
+ * marker and metadata for the generator's parsing process.
+ * @param options - Optional configuration for the generator.
+ */
+export function ExportToSQL(options?: ExportToSQLOptions): ClassDecorator {
+  // eslint-disable-next-line @typescript-eslint/no-empty-function, @typescript-eslint/no-unused-vars
+  return (target: object) => {};
+}
+
+/**
+ * Interface describing the optional parameters for the SqlColumn property decorator.
+ */
+interface SqlColumnOptions {
+  /**
+   * Overrides the default SQL data type mapping. E.g., "NVARCHAR(100)", "DECIMAL(18, 2)".
+   */
+  type?: string;
+
+  /**
+   * Specifies that this property is part of the primary key.
+   */
+  isPrimaryKey?: boolean;
+
+  /**
+   * Specifies if the column should be nullable in the database. Defaults to true.
+   */
+  isNullable?: boolean;
+}
+
+/**
+ * A property decorator that provides detailed SQL-specific configuration for a class property.
+ * This is a no-op decorator at runtime, used for static analysis by the SQLSync Generator.
+ * @param options - Optional configuration for the database column.
+ */
+export function SqlColumn(options?: SqlColumnOptions): PropertyDecorator {
+  // eslint-disable-next-line @typescript-eslint/no-empty-function, @typescript-eslint/no-unused-vars
+  return (target: object, propertyKey: string | symbol) => {};
+}

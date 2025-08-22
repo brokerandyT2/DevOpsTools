@@ -1,0 +1,51 @@
+﻿using System;
+
+namespace SqlSync.Attributes
+{
+    /// <summary>
+    /// Marks a class as an entity to be synchronized with the database schema.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class, Inherited = false, AllowMultiple = false)]
+    public sealed class ExportToSQLAttribute : Attribute
+    {
+        /// <summary>
+        /// Overrides the default table name (which is derived from the class name).
+        /// </summary>
+        public string TableName { get; set; }
+
+        /// <summary>
+        /// Specifies the database schema for this table.
+        /// </summary>
+        public string SchemaName { get; set; }
+
+        public ExportToSQLAttribute()
+        {
+        }
+    }
+
+    /// <summary>
+    /// Provides detailed SQL-specific configuration for a class property.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Property, Inherited = false, AllowMultiple = false)]
+    public sealed class SqlColumnAttribute : Attribute
+    {
+        /// <summary>
+        /// Overrides the default SQL data type mapping. E.g., "NVARCHAR(100)", "DECIMAL(18, 2)".
+        /// </summary>
+        public string Type { get; set; }
+
+        /// <summary>
+        /// Specifies that this property is part of the primary key.
+        /// </summary>
+        public bool IsPrimaryKey { get; set; }
+
+        /// <summary>
+        /// Specifies if the column should be nullable in the database. Defaults to true.
+        /// </summary>
+        public bool IsNullable { get; set; } = true;
+
+        public SqlColumnAttribute()
+        {
+        }
+    }
+}

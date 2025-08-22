@@ -1,511 +1,68 @@
-﻿# Version Detective Container - Developer Integration Guide
-
-## Documentation Access
-
-This documentation is always available via HTTP endpoint on port 8080:
-
-```bash
-# Access documentation from running container
-curl http://localhost:8080/docs
-
-# Or in browser
-http://localhost:8080/docs
-```
-
-## Overview
-
-Version Detective Container is a containerized tool that automatically calculates semantic version increments by analyzing code changes in your repository. It tracks specific attributes/annotations in your source code and applies semantic versioning rules based on detected changes.
-
-**Key Features:**
-- Multi-language support (C#, Java, Python, JavaScript, TypeScript, Go)
-- Automated semantic versioning based on code analysis
-- Git tag generation with customizable templates
-- Integration with licensing servers and key vaults
-- Pipeline execution tracking via shared log files
-- Comprehensive output metadata for downstream tools
-- Built-in documentation server on port 8080
-
-## Quick Start
-
-### Basic Usage
-
-```bash
-# Pass entire environment to container via .env file
-docker run --rm \
-  -p 8080:8080 \
-  --volume $(pwd):/src \
-  --env-file .env \
-  myregistry.azurecr.io/version-detective:latest
-
-# Or pass all current environment variables
-docker run --rm \
-  -p 8080:8080 \
-  --volume $(pwd):/src \
-  $(env | sed 's/^/--env /') \
-  myregistry.azurecr.io/version-detective:latest
-
-# Documentation is automatically available at:
-# http://localhost:8080/docs
-```
-
-### Pipeline Integration
-
-**Azure DevOps:**
-```yaml
-# Set ALL configuration variables at pipeline level
-variables:
-  LANGUAGE_CSHARP: true
-  TRACK_ATTRIBUTE: ExportToSQL
-  LICENSE_SERVER: https://license.company.com
-  TAG_TEMPLATE: "release/{version}"
-  REPO_URL: $(Build.Repository.Uri)
-  BRANCH: $(Build.SourceBranchName)
-  # ... all other configuration variables as needed
-
-resources:
-  containers:
-  - container: version_detective
-    image: myregistry.azurecr.io/version-detective:latest
-    options: --volume $(Build.SourcesDirectory):/src
-    ports:
-    - 8080:8080
-
-jobs:
-- job: calculate_versions
-  container: version_detective
-  # Container automatically inherits ALL pipeline variables as environment variables
-  steps:
-  - script: /app/version-detective
-```
-
-**GitHub Actions:**
-```yaml
-# Set ALL configuration variables at workflow level
-env:
-  LANGUAGE_JAVA: true
-  TRACK_ATTRIBUTE: Entity
-  LICENSE_SERVER: https://license.company.com
-  REPO_URL: ${{ github.repository }}
-  BRANCH: ${{ github.ref_name }}
-  # ... all other configuration variables as needed
-
-jobs:
-  version-calculation:
-    runs-on: ubuntu-latest
-    container:
-      image: myregistry.azurecr.io/version-detective:latest
-      options: --volume ${{ github.workspace }}:/src
-      ports:
-        - 8080:8080
-    # Container automatically inherits ALL workflow environment variables
-    steps:
-      - name: Calculate versions
-        run: /app/version-detective
-```
-
-## Complete Configuration Reference
-
-All configuration is provided via environment variables. The container receives all environment variables and parses what it needs.
-
-### Required Configuration
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `LANGUAGE_CSHARP` | Enable C# analysis (exactly one language required) | `true` |
-| `LANGUAGE_JAVA` | Enable Java analysis (exactly one language required) | `true` |
-| `LANGUAGE_PYTHON` | Enable Python analysis (exactly one language required) | `true` |
-| `LANGUAGE_JAVASCRIPT` | Enable JavaScript analysis (exactly one language required) | `true` |
-| `LANGUAGE_TYPESCRIPT` | Enable TypeScript analysis (exactly one language required) | `true` |
-| `LANGUAGE_GO` | Enable Go analysis (exactly one language required) | `true` |
-| `TRACK_ATTRIBUTE` | Attribute/annotation name to track for versioning | `ExportToSQL`, `Entity`, `version_track` |
-| `REPO_URL` | Repository URL for context | `https://github.com/company/project` |
-| `BRANCH` | Git branch being analyzed | `main`, `develop`, `feature/api-v2` |
-| `LICENSE_SERVER` | URL of licensing server | `https://license.company.com` |
-
-### Optional Configuration
-
-| Variable | Default | Description | Example |
-|----------|---------|-------------|---------|
-| `TOOL_NAME` | Assembly name | Name to report to license server | Defaults to executable assembly name |
-| `LICENSE_TIMEOUT` | `300` | Seconds to wait for license server response | `300` |
-| `LICENSE_RETRY_INTERVAL` | `30` | Seconds between license server retry attempts | `30` |
-| `TAG_TEMPLATE` | `{branch}/{repo}/semver/{version}` | Custom tag pattern using supported tokens | `release/{version}`, `v{version}-{date}` |
-| `MARKETING_TAG_TEMPLATE` | `{branch}/{repo}/marketing/{version}` | Marketing version tag pattern | `marketing/v{version}` |
-| `FROM` | Latest semver tag | Specific commit/tag to analyze changes from | `v1.0.0`, `abc123def` |
-| `MODE` | `pr` | Operation mode | `pr` (analyze only), `deploy` (apply changes) |
-| `VALIDATE_ONLY` | `false` | Validation-only mode | `true`, `false` |
-| `NO_OP` | `false` | No-operation mode (analyze and report only) | `true`, `false` |
-| `DLL_PATHS` | (empty) | Colon-separated paths to compiled assemblies | `bin/Release:build/libs:target/classes` |
-| `BUILD_OUTPUT_PATH` | (empty) | Primary build output directory | `bin/Release/net8.0` |
-| `VERBOSE` | `false` | Enable detailed logging | `true`, `false` |
-| `LOG_LEVEL` | `INFO` | Logging level | `DEBUG`, `INFO`, `WARN`, `ERROR` |
-
-### Authentication Configuration
-
-| Variable | Default | Description | Example |
-|----------|---------|-------------|---------|
-| `PAT_TOKEN` | (empty) | Personal Access Token for git operations | `ghp_xxxxxxxxxxxx` |
-| `PAT_SECRET_NAME` | (empty) | Key vault reference for PAT | `github-pat-prod` |
-
-**Automatic Pipeline Authentication:**
-The tool automatically detects and uses platform tokens:
-- Azure DevOps: `System.AccessToken`
-- GitHub Actions: `GITHUB_TOKEN`
-- Jenkins: `GIT_TOKEN`, `SCM_TOKEN`
-
-### Key Vault Configuration
-
-**Azure Key Vault:**
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `VAULT_TYPE` | Must be `azure` | `azure` |
-| `VAULT_URL` | Azure Key Vault URL | `https://myvault.vault.azure.net` |
-| `AZURE_CLIENT_ID` | Service principal client ID | `12345678-1234-1234-1234-123456789012` |
-| `AZURE_CLIENT_SECRET` | Service principal secret | `your-secret` |
-| `AZURE_TENANT_ID` | Azure tenant ID | `87654321-4321-4321-4321-210987654321` |
-
-**AWS Secrets Manager:**
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `VAULT_TYPE` | Must be `aws` | `aws` |
-| `AWS_REGION` | AWS region | `us-east-1` |
-| `AWS_ACCESS_KEY_ID` | AWS access key | `AKIAIOSFODNN7EXAMPLE` |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret key | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` |
-
-**HashiCorp Vault:**
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `VAULT_TYPE` | Must be `hashicorp` | `hashicorp` |
-| `VAULT_URL` | Vault server URL | `https://vault.company.com:8200` |
-| `VAULT_TOKEN` | Vault authentication token | `s.1234567890abcdef` |
-
-## Language Selection
-
-**Mutually exclusive** - set exactly one to `true`, all others to `false` or leave empty:
-
-```bash
-# C# Analysis
-LANGUAGE_CSHARP=true
-
-# Java Analysis  
-LANGUAGE_JAVA=true
-
-# Python Analysis
-LANGUAGE_PYTHON=true
-
-# JavaScript Analysis
-LANGUAGE_JAVASCRIPT=true
-
-# TypeScript Analysis
-LANGUAGE_TYPESCRIPT=true
-
-# Go Analysis
-LANGUAGE_GO=true
-```
-
-## Tag Template Configuration
-
-Customize how version tags are generated using supported tokens:
-
-```bash
-# Simple versioning
-TAG_TEMPLATE="v{version}"
-# Result: v1.2.3
-
-# Detailed with branch and date
-TAG_TEMPLATE="{branch}/release-{version}-{date}"
-# Result: main/release-1.2.3-2025-01-15
-
-# Build-specific
-TAG_TEMPLATE="build-{build-number}/v{version}"
-# Result: build-1234/v1.2.3
-
-# Repository-specific with commit
-TAG_TEMPLATE="{repo}-{version}-{commit-hash}"
-# Result: my-project-1.2.3-a1b2c3d
-
-# Marketing version
-MARKETING_TAG_TEMPLATE="marketing/v{version}"
-# Result: marketing/v1.2.0
-```
-
-**Available Tokens:**
-- `{version}` - Calculated semantic version (1.2.3)
-- `{major}`, `{minor}`, `{patch}` - Individual version components
-- `{branch}` - Git branch name
-- `{repo}` - Repository name
-- `{date}` - Current date (YYYY-MM-DD)
-- `{datetime}` - Current datetime (YYYY-MM-DD-HHMMSS)
-- `{commit-hash}` - Short git commit hash (7 chars)
-- `{commit-hash-full}` - Full git commit hash
-- `{build-number}` - CI/CD build number
-- `{user}` - User who triggered the pipeline
-
-## How It Works
-
-### 1. Code Analysis
-
-The tool analyzes your source code to find entities marked with your specified tracking attribute:
-
-**C# Example:**
-```csharp
-[ExportToSQL]
-public class Customer
-{
-    public string Name { get; set; }
-    public string Email { get; set; }
-}
-```
-
-**Java Example:**
-```java
-@Entity
-public class Customer {
-    private String name;
-    private String email;
-}
-```
-
-**Python Example:**
-```python
-@version_track
-class Customer:
-    name: str
-    email: str
-```
-
-### 2. Change Detection
-
-The tool compares the current code against a baseline (previous version tag or specified commit) to detect:
-
-- **Major Changes** (Breaking): New entities, removed entities, removed properties, type changes
-- **Minor Changes** (Features): New methods, new properties (non-breaking additions)
-- **Patch Changes** (Fixes): Bug fixes, performance improvements, documentation updates
-
-### 3. Version Calculation
-
-Applies semantic versioning rules:
-- **Major**: Increment for breaking changes (1.0.0 → 2.0.0)
-- **Minor**: Increment for new features (1.0.0 → 1.1.0)
-- **Patch**: Increment for fixes (1.0.0 → 1.0.1)
-
-### 4. Output Generation
-
-Creates files in your mounted volume (`/src`):
-
-- **`pipeline-tools.log`**: Execution record for tool chaining
-- **`version-metadata.json`**: Detailed analysis results
-- **`tag-patterns.json`**: Generated tag patterns for downstream tools
-
-## Output Files
-
-### pipeline-tools.log
-
-Shared execution log for tool chaining:
-```
-version-detective=1.0.0
-other-tool=2.1.0
-final-tool=1.5.0
-```
-
-Format: `tool-name=tool-version` (with optional `(BURST)` indicator)
-
-### version-metadata.json
-
-Comprehensive analysis results:
-```json
-{
-  "tool_name": "version-detective",
-  "tool_version": "1.0.0",
-  "execution_time": "2025-01-15T14:30:22Z",
-  "language": "csharp",
-  "repository": "https://github.com/company/project",
-  "branch": "main",
-  "current_commit": "a1b2c3d4e5f6789012345678901234567890abcd",
-  "baseline_commit": "previous-commit-hash",
-  "version_calculation": {
-    "current_version": "1.0.0",
-    "new_semantic_version": "1.1.0",
-    "new_marketing_version": "1.1.0",
-    "has_major_changes": false,
-    "minor_changes": 2,
-    "patch_changes": 1,
-    "reasoning": "New functionality added: 2 new methods, 1 new property"
-  },
-  "tag_templates": {
-    "semantic_tag": "release/1.1.0",
-    "marketing_tag": "marketing/1.1.0"
-  },
-  "license_used": true,
-  "burst_mode_used": false,
-  "mode": "pr"
-}
-```
-
-### tag-patterns.json
-
-Generated tag patterns:
-```json
-{
-  "semantic_tag": "release/1.1.0",
-  "marketing_tag": "marketing/1.1.0",
-  "generated_at": "2025-01-15T14:30:22Z",
-  "token_values": {
-    "version": "1.1.0",
-    "branch": "main",
-    "repo": "my-project",
-    "date": "2025-01-15"
-  }
-}
-```
-
-## Licensing Behavior
-
-The tool integrates with a licensing server to manage usage:
-
-| Scenario | Behavior | Pipeline Impact |
-|----------|----------|-----------------|
-| License available | Normal execution | Analysis + deployment (if `MODE=deploy`) |
-| License expired | Automatic NOOP mode | Analysis only, no changes applied |
-| License server unreachable | Wait and retry | Configurable timeout, then fail |
-| Burst capacity exceeded | Wait for license | Configurable wait, then fail |
-
-**Burst Mode:** When regular licenses are exhausted, the tool can use burst capacity. This is indicated in logs and output files with `(BURST)` markers.
-
-## Error Codes
-
-| Exit Code | Description |
-|-----------|-------------|
-| 0 | Success |
-| 1 | Invalid configuration |
-| 2 | License unavailable |
-| 3 | Authentication failure |
-| 4 | Repository access failure |
-| 5 | Build artifacts not found |
-| 6 | Git operation failure |
-| 7 | Tag template validation failure |
-| 8 | Key vault access failure |
-
-## Best Practices
-
-### Pipeline Integration
-
-1. **Environment Variables**: Set all configuration at the pipeline level - containers automatically inherit ALL variables
-2. **Volume Mounting**: Always mount your source directory to `/src`
-3. **Error Handling**: Check exit codes and handle licensing failures gracefully
-4. **Logging**: Enable `VERBOSE=true` for debugging, but use `INFO` for production
-
-### Version Tracking
-
-1. **Consistent Attributes**: Use the same tracking attribute across your entire codebase
-2. **Meaningful Changes**: Only mark entities that represent meaningful API changes
-3. **Documentation**: Document your tracking strategy for team members
-
-### Tag Templates
-
-1. **Consistency**: Use consistent tag patterns across projects
-2. **Descriptiveness**: Include branch and date for feature branches
-3. **Downstream Compatibility**: Ensure your tag patterns work with deployment tools
-
-### Security
-
-1. **Key Vaults**: Use key vaults for sensitive tokens, not environment variables
-2. **Least Privilege**: Grant minimal necessary permissions to pipeline tokens
-3. **Rotation**: Regularly rotate PAT tokens and vault credentials
-
-## Troubleshooting
-
-### Common Issues
-
-**No Language Selected:**
-```
-[ERROR] No language specified. Set exactly one: LANGUAGE_CSHARP, LANGUAGE_JAVA, etc.
-```
-*Solution: Set exactly one language environment variable to `true`*
-
-**Invalid Tag Template:**
-```
-[ERROR] Unknown token: {unknown-token}
-```
-*Solution: Use only supported tokens from the reference table*
-
-**License Server Unavailable:**
-```
-[ERROR] Failed to connect to license server
-```
-*Solution: Verify `LICENSE_SERVER` URL and network connectivity*
-
-**Git Authentication Failure:**
-```
-[ERROR] Git authentication failed
-```
-*Solution: Ensure `PAT_TOKEN` is set or pipeline has repository permissions*
-
-### Debug Mode
-
-Enable comprehensive logging:
-```bash
-VERBOSE=true
-LOG_LEVEL=DEBUG
-```
-
-This outputs:
-- Complete environment configuration (with sensitive values masked)
-- Detailed execution steps
-- Git operations and file analysis
-- Version calculation reasoning
-
-## Integration Examples
-
-### Multi-Stage Pipeline
-
-```yaml
-# Stage 1: Version Calculation
-- stage: VersionCalculation
-  variables:
-    LANGUAGE_CSHARP: true
-    TRACK_ATTRIBUTE: ExportToSQL
-    LICENSE_SERVER: https://license.company.com
-    # ... all other variables
-  jobs:
-  - job: calculate_version
-    container: version_detective
-    steps:
-    - script: /app/version-detective
-
-# Stage 2: Use Calculated Version
-- stage: Build
-  dependsOn: VersionCalculation
-  jobs:
-  - job: build_application
-    steps:
-    - script: |
-        # Read calculated version
-        VERSION=$(cat tag-patterns.json | jq -r '.semantic_tag')
-        echo "Building version: $VERSION"
-```
-
-### Tool Chaining
-
-```bash
-# Tool 1: Version Detective
-docker run --env-file .env --volume $(pwd):/src version-detective
-
-# Tool 2: Read execution history
-docker run --env-file .env --volume $(pwd):/src another-tool
-# Can read pipeline-tools.log to see version-detective ran
-
-# Tool 3: Use version metadata
-docker run --env-file .env --volume $(pwd):/src deployment-tool
-# Can read version-metadata.json for deployment decisions
-```
-
-## Support
-
-For issues and questions:
-- Check exit codes and error messages
-- Enable debug logging (`VERBOSE=true`)
-- Verify all required environment variables are set
-- Ensure proper volume mounting to `/src`
-- Check licensing server connectivity and credentials
-- Access documentation at `http://container:8080/docs`
+﻿# 3SC SQLSync Generator: Definitive Operations Guide
+
+**Audience:** DevOps Engineers, Platform Engineers, Database Administrators, Lead Developers, Software Architects
+
+### 1. Tool Description
+
+The 3SC SQLSync Generator is a polyglot, containerized command-line tool that automates database schema lifecycle management. It bridges the gap between application code and the database by treating your object-oriented entities as the single source of truth for the database schema.
+
+The tool connects to your source code, discovers developer-annotated classes (the "target schema"), compares them against a live database (the "current schema"), and generates a safe, multi-phase SQL deployment script to synchronize them. It is designed for CI/CD automation, configured entirely via environment variables, and provides a comprehensive suite of Control Points (webhooks) for deep integration into enterprise workflows, policy enforcement, and release governance.
+
+Its core value is creating a reliable, repeatable, and GitOps-driven process for evolving database schemas in lockstep with the application code that depends on them.
+
+### 2. Core Concepts
+
+*   **Code as the Source of Truth:** Your application's data models (e.g., C# classes, Java classes) are the blueprint. You use language-idiomatic constructs (Attributes, Decorators) to declare how these entities should map to database tables, columns, and relationships.
+*   **Environment-Driven Configuration:** All behavior is controlled via environment variables. There are no configuration files. This makes the pipeline definition the single, explicit source of truth for the tool's behavior.
+*   **Generate vs. Deploy Lifecycle:** The tool operates in two distinct modes. `Generate` mode is for analysis and pull requests, producing a plan and script without execution. `Deploy` mode performs the full lifecycle, including backup, execution, and tagging.
+*   **Ecosystem-Aware Authentication:** The tool abstracts database connectivity. It can connect to on-premises, bare-metal instances using username/password, or to cloud PaaS offerings (Azure SQL, AWS RDS) using their native identity-based authentication mechanisms.
+*   **Stage-Specific Control Points:** The tool's workflow is broken into distinct stages (e.g., Discovery, Validation, Risk Assessment, Execution). It can invoke external webhooks during these stages, allowing for fine-grained monitoring, policy-as-code enforcement, and interactive approval gates.
+
+### 3. Universal Environment Variables (`3SC_`)
+
+These are the standard, cross-tool variables that control foundational features. A tool-specific variable (e.g., `SQLSYNC_VERBOSE`) will always override its `3SC_` counterpart.
+
+| Variable                 | Description                                                 | Example Value(s)                                 |
+| ------------------------ | ----------------------------------------------------------- | ------------------------------------------------ |
+| `3SC_LICENSE_SERVER`     | The URL of the 3SC license validation server.               | `https://license.3sc.io`                         |
+| `3SC_LOG_ENDPOINT_URL`   | A "firehose" endpoint URL for external logging (e.g., Splunk). | `https://splunk.mycorp.com:8088/services/collector` |
+| `3SC_LOG_ENDPOINT_TOKEN` | The authentication token for the external logging endpoint. | *(from secret)*                                  |
+| `3SC_LOG_LEVEL`          | The logging verbosity for all tools.                        | `Debug`, `Information`, `Warning`, `Error`       |
+| `3SC_VERBOSE`            | Boolean (`true`/`false`). Enables maximum logging output.   | `true`                                           |
+| `3SC_NO_OP`              | Boolean (`true`/`false`). If true, the tool performs a dry run. | `true`                                           |
+| `3SC_VAULT_TYPE`         | The type of key vault to use for secrets.                   | `Azure`, `Aws`, `HashiCorp`                      |
+| `3SC_VAULT_URL`          | The URL of the key vault instance.                          | `https://my-vault.vault.azure.net`               |
+
+### 4. Core Configuration (`SQLSYNC_`)
+
+| Variable                    | Required? | Description                                                                                                                   | Example Value                        |
+| --------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| `SQLSYNC_MODE`              | Yes       | The operational mode. `Generate` is for analysis and PR checks. `Deploy` executes the changes.                                  | `Generate`                           |
+| `SQLSYNC_LANGUAGE_<LANG>`   | Yes       | A boolean (`true`) flag to select the source language. Only one can be set. `<LANG>` is `CSHARP`, `JAVA`, `PYTHON`, `TYPESCRIPT`, `GO`. | `SQLSYNC_LANGUAGE_CSHARP=true`       |
+| `SQLSYNC_DATABASE_<DB>`     | Yes       | A boolean (`true`) flag to select the database provider. Only one can be set. `<DB>` is `SQLSERVER`, `POSTGRESQL`, `MYSQL`, etc.  | `SQLSYNC_DATABASE_SQLSERVER=true`    |
+| `SQLSYNC_TRACK_ATTRIBUTE`   | Yes       | The case-sensitive name of the Attribute, Decorator, or Comment Directive the tool should look for in the source code.        | `ExportToSQL`                        |
+| `SQLSYNC_REPO_URL`          | Yes       | The clone URL of the Git repository. Often provided by the CI system.                                                         | `https://github.com/my-org/my-api.git` |
+| `SQLSYNC_BRANCH`            | Yes       | The name of the current Git branch. Often provided by the CI system.                                                          | `main`                               |
+| `SQLSYNC_DB_SERVER`         | Yes       | The server hostname or IP address of the target database.                                                                     | `mydb.database.windows.net`          |
+| `SQLSYNC_DB_NAME`           | Yes       | The name of the target database.                                                                                              | `BillingDB`                          |
+| `SQLSYNC_AUTH_MODE`         | Yes       | The authentication strategy to use. `Password` is for standard credentials. `AzureMsi` uses Azure Managed Identity.              | `Password`, `AzureMsi`               |
+
+### 5. DX Server Endpoints
+
+While running, the container exposes a **Developer Experience (DX) Server** on port `8080`.
+
+*   **/health**: A simple health check endpoint.
+*   **/docs**: The main documentation page, which provides links to language-specific guides and helper file downloads.
+
+You can access it at `http://localhost:8080/docs` when running the container with the port mapped (`-p 8080:8080`).
+
+### 6. Language-Specific Guides
+
+For detailed instructions on how to implement the schema definition DSL in your project's source language, including code examples and helper file downloads, please see the guides below. **You will need to create your own attribute/decorator classes as shown in these guides.**
+
+*   [C# Guide](./csharp/readme.md)
+*   [Java Guide](./java/readme.md)
+*   [Python Guide](./python/readme.md)
+*   [TypeScript Guide](./typescript/readme.md)
+*   [Go Guide](./go/readme.md)
+*   [JavaScript Guide](./javascript/readme.md)

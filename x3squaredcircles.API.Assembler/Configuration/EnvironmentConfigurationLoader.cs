@@ -6,10 +6,13 @@ namespace x3squaredcircles.API.Assembler.Configuration
 {
     /// <summary>
     /// A static class responsible for loading all application configuration from environment variables
-    /// into a strongly-typed AssemblerConfiguration object.
+    /// into a strongly-typed AssemblerConfiguration object, adhering to the 3SC Universal Override Protocol.
     /// </summary>
     public static class EnvironmentConfigurationLoader
     {
+        private const string ToolPrefix = "ASSEMBLER_";
+        private const string CommonPrefix = "3SC_";
+
         /// <summary>
         /// Loads and parses all known environment variables.
         /// </summary>
@@ -18,100 +21,106 @@ namespace x3squaredcircles.API.Assembler.Configuration
         {
             var config = new AssemblerConfiguration
             {
-                // Core Configuration
-                RepoUrl = GetString("REPO_URL"),
-                Branch = GetString("BRANCH"),
-                AssemblerEnv = GetString("ASSEMBLER_ENV", "dev"),
-                Language = GetSelectedLanguage(),
-                Cloud = GetSelectedCloud(),
+                // Common Platform Settings (resolved using override protocol)
+                RepoUrl = GetString("REPO_URL", isRequired: true),
+                Branch = GetString("BRANCH", isRequired: true),
+                NoOp = GetBool("NO_OP", true), // Default to true for safety
+                ValidateOnly = GetBool("VALIDATE_ONLY", false),
 
-                // Paths
-                Libs = GetString("ASSEMBLER_LIBS"),
-                Sources = GetString("ASSEMBLER_SOURCES"),
-                OutputPath = GetString("ASSEMBLER_OUTPUT", "./output"),
-
-                // Licensing
-                License = new LicenseConfiguration
-                {
-                    ServerUrl = GetString("LICENSE_SERVER"),
-                    TimeoutSeconds = GetInt("LICENSE_TIMEOUT", 300)
-                },
-
-                // Key Vault
-                Vault = new VaultConfiguration
-                {
-                    Type = GetString("VAULT_TYPE"),
-                    Url = GetString("VAULT_URL")
-                },
-
-                // Logging
-                Logging = new LoggingConfiguration
-                {
-                    LogLevel = GetEnum<LogLevel>("LOG_LEVEL", LogLevel.Information),
-                    ExternalLogEndpoint = GetString("THREE_SC_LOG_ENDPOINT"),
-                    ExternalLogToken = GetString("THREE_SC_LOG_TOKEN"),
-                    ExternalLogTokenVaultKey = GetString("THREE_SC_LOG_TOKEN_VAULT_KEY")
-                },
-
-                // Tag Template
+                // Tool-Specific Settings
+                Language = GetString("LANGUAGE", isRequired: true),
+                Cloud = GetString("CLOUD", isRequired: true),
+                AssemblerEnv = GetString("ENV", "dev"),
+                Libs = GetString("LIBS", isRequired: true),
+                Sources = GetString("SOURCES", isRequired: true),
+                OutputPath = GetString("OUTPUT_PATH", "./output"),
                 TagTemplate = new TagTemplateConfiguration
                 {
                     Template = GetString("TAG_TEMPLATE", "{repo}/{group}/{version}")
                 },
 
-                // Operation Modes
-                ValidateOnly = GetBool("VALIDATE_ONLY"),
-                NoOp = GetBool("NO_OP", true)
+                // Nested Configuration Objects
+                License = new LicenseConfiguration
+                {
+                    ServerUrl = GetString("LICENSE_SERVER", isRequired: true),
+                    TimeoutSeconds = GetInt("LICENSE_TIMEOUT", 300),
+                    RetryIntervalSeconds = GetInt("LICENSE_RETRY_INTERVAL", 30)
+                },
+                Vault = new VaultConfiguration
+                {
+                    Type = GetString("VAULT_TYPE"),
+                    Url = GetString("VAULT_URL")
+                },
+                Logging = new LoggingConfiguration
+                {
+                    LogLevel = GetEnum<LogLevel>("LOG_LEVEL", LogLevel.Information),
+                    ExternalLogEndpoint = GetString("LOG_ENDPOINT_URL"),
+                    ExternalLogToken = GetString("LOG_ENDPOINT_TOKEN")
+                },
+                ControlPoints = new ControlPointsConfiguration
+                {
+                    Logging = GetString("CP_LOGGING"),
+                    OnStartup = GetString("CP_ON_STARTUP"),
+                    OnSuccess = GetString("CP_ON_SUCCESS"),
+                    OnFailure = GetString("CP_ON_FAILURE")
+                }
             };
 
             return config;
         }
 
-        #region Private Getters and Parsers
+        #region Standardized Getters (Implements Universal Override Protocol)
 
-        private static string GetSelectedLanguage()
+        private static string GetString(string suffix, string defaultValue = "", bool isRequired = false)
         {
-            if (GetBool("LANGUAGE_CSHARP")) return "csharp";
-            if (GetBool("LANGUAGE_JAVA")) return "java";
-            if (GetBool("LANGUAGE_PYTHON")) return "python";
-            if (GetBool("LANGUAGE_JAVASCRIPT")) return "javascript";
-            if (GetBool("LANGUAGE_TYPESCRIPT")) return "typescript";
-            if (GetBool("LANGUAGE_GO")) return "go";
-            return string.Empty;
+            var toolVar = $"{ToolPrefix}{suffix}";
+            var commonVar = $"{CommonPrefix}{suffix}";
+
+            var value = Environment.GetEnvironmentVariable(toolVar)
+                     ?? Environment.GetEnvironmentVariable(commonVar)
+                     ?? defaultValue;
+
+            if (isRequired && string.IsNullOrWhiteSpace(value))
+            {
+                throw new AssemblerException(AssemblerExitCode.InvalidConfiguration, $"Required configuration not found. Set either '{toolVar}' or '{commonVar}'.");
+            }
+            return value;
         }
 
-        private static string GetSelectedCloud()
+        private static bool GetBool(string suffix, bool defaultValue = false)
         {
-            if (GetBool("CLOUD_AZURE")) return "azure";
-            if (GetBool("CLOUD_AWS")) return "aws";
-            if (GetBool("CLOUD_GCP")) return "gcp";
-            if (GetBool("CLOUD_ORACLE")) return "oracle";
-            return string.Empty;
+            var toolVar = $"{ToolPrefix}{suffix}";
+            var commonVar = $"{CommonPrefix}{suffix}";
+
+            var valueStr = Environment.GetEnvironmentVariable(toolVar)
+                        ?? Environment.GetEnvironmentVariable(commonVar);
+
+            if (string.IsNullOrEmpty(valueStr)) return defaultValue;
+
+            return string.Equals(valueStr, "true", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(valueStr, "1", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static string GetString(string name, string defaultValue = "")
+        private static int GetInt(string suffix, int defaultValue)
         {
-            return Environment.GetEnvironmentVariable(name) ?? defaultValue;
+            var toolVar = $"{ToolPrefix}{suffix}";
+            var commonVar = $"{CommonPrefix}{suffix}";
+
+            var valueStr = Environment.GetEnvironmentVariable(toolVar)
+                        ?? Environment.GetEnvironmentVariable(commonVar);
+
+            return int.TryParse(valueStr, out var result) ? result : defaultValue;
         }
 
-        private static bool GetBool(string name, bool defaultValue = false)
+        private static T GetEnum<T>(string suffix, T defaultValue) where T : struct, Enum
         {
-            var value = Environment.GetEnvironmentVariable(name);
-            if (string.IsNullOrEmpty(value)) return defaultValue;
-            return string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(value, "1", StringComparison.OrdinalIgnoreCase);
-        }
+            var toolVar = $"{ToolPrefix}{suffix}";
+            var commonVar = $"{CommonPrefix}{suffix}";
 
-        private static int GetInt(string name, int defaultValue)
-        {
-            var value = Environment.GetEnvironmentVariable(name);
-            return int.TryParse(value, out var result) ? result : defaultValue;
-        }
+            var valueStr = Environment.GetEnvironmentVariable(toolVar)
+                        ?? Environment.GetEnvironmentVariable(commonVar);
 
-        private static T GetEnum<T>(string name, T defaultValue) where T : struct, Enum
-        {
-            var value = Environment.GetEnvironmentVariable(name);
-            return Enum.TryParse<T>(value, true, out var result) ? result : defaultValue;
+            return Enum.TryParse<T>(valueStr, true, out var result) ? result : defaultValue;
         }
 
         #endregion

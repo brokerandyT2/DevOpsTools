@@ -1,9 +1,12 @@
 ﻿using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.Extensions.Logging;
-using System.Collections.Immutable;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Text.Json;
+using System.Threading.Tasks;
 using x3squaredcircles.API.Assembler.Models;
 using Microsoft.CodeAnalysis.MSBuild;
 
@@ -18,12 +21,13 @@ namespace x3squaredcircles.API.Assembler.Services
     }
 
     /// <summary>
-    /// Uses Roslyn to scan compiled C# assemblies, find classes and methods decorated with the Assembler DSL,
-    /// and build a model of the APIs to be generated.
+    /// Uses Roslyn and MSBuildWorkspace to scan compiled C# projects, find classes and methods
+    /// decorated with the Assembler DSL, and build a model of the APIs to be generated.
     /// </summary>
     public class DiscoveryService : IDiscoveryService
     {
         private readonly ILogger<DiscoveryService> _logger;
+        private readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
         public DiscoveryService(ILogger<DiscoveryService> logger)
         {
@@ -43,23 +47,20 @@ namespace x3squaredcircles.API.Assembler.Services
 
             using (var workspace = MSBuildWorkspace.Create())
             {
-                foreach (var path in assemblyPaths)
-                {
-                    if (!File.Exists(path))
-                    {
-                        _logger.LogWarning("Library path not found, skipping: {Path}", path);
-                        continue;
-                    }
+                workspace.WorkspaceFailed += (s, e) => _logger.LogWarning("MSBuildWorkspace failed: {Message}", e.Diagnostic.Message);
 
+                foreach (var assemblyPath in assemblyPaths)
+                {
                     try
                     {
-                        var projectPath = FindProjectFileForAssembly(path);
+                        var projectPath = FindProjectFileForAssembly(assemblyPath);
                         if (projectPath == null)
                         {
-                            _logger.LogWarning("Could not find a .csproj for the assembly, analysis may be limited: {Assembly}", path);
+                            _logger.LogWarning("Could not find a .csproj file associated with the assembly, skipping analysis: {Assembly}", assemblyPath);
                             continue;
                         }
 
+                        _logger.LogDebug("Opening project for analysis: {Project}", projectPath);
                         var project = await workspace.OpenProjectAsync(projectPath);
                         var compilation = await project.GetCompilationAsync();
 
@@ -69,42 +70,56 @@ namespace x3squaredcircles.API.Assembler.Services
                             continue;
                         }
 
-                        foreach (var syntaxTree in compilation.SyntaxTrees)
+                        // Check for compilation errors in the user's code
+                        var diagnostics = compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error);
+                        if (diagnostics.Any())
                         {
-                            var semanticModel = compilation.GetSemanticModel(syntaxTree);
-                            var classDeclarations = (await syntaxTree.GetRootAsync()).DescendantNodes().OfType<ClassDeclarationSyntax>();
-
-                            foreach (var classDecl in classDeclarations)
-                            {
-                                var classSymbol = semanticModel.GetDeclaredSymbol(classDecl);
-                                if (classSymbol != null && HasAttribute(classSymbol, "ApiEndpointAttribute"))
-                                {
-                                    var apiModel = BuildApiModel(classSymbol, projectPath);
-                                    discoveredApiClasses.Add(apiModel);
-                                }
-                            }
+                            var errors = string.Join("\n", diagnostics.Select(d => $"  - {d.GetMessage()} ({d.Location.GetLineSpan().Path})"));
+                            throw new AssemblerException(AssemblerExitCode.AssemblyScanFailure, $"The business logic project '{project.Name}' has compilation errors and cannot be analyzed:\n{errors}");
                         }
+
+                        discoveredApiClasses.AddRange(await AnalyzeCompilation(compilation, projectPath));
                     }
+                    catch (AssemblerException) { throw; } // Re-throw our specific exceptions
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Failed to analyze assembly and its project: {Path}", path);
-                        throw new AssemblerException(AssemblerExitCode.AssemblyScanFailure, $"Failed to analyze assembly: {path}", ex);
+                        _logger.LogError(ex, "An unexpected error occurred while analyzing assembly: {Path}", assemblyPath);
+                        throw new AssemblerException(AssemblerExitCode.AssemblyScanFailure, $"An unexpected error occurred while analyzing assembly '{assemblyPath}'.", ex);
                     }
                 }
             }
 
             var result = new { apiClasses = discoveredApiClasses };
-            var jsonString = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+            var jsonString = JsonSerializer.Serialize(result, _jsonOptions);
 
             _logger.LogInformation("✓ Discovery complete. Found {Count} API endpoint classes.", discoveredApiClasses.Count);
             return JsonDocument.Parse(jsonString);
         }
 
+        private async Task<IEnumerable<object>> AnalyzeCompilation(Compilation compilation, string projectPath)
+        {
+            var apiClasses = new List<object>();
+            foreach (var syntaxTree in compilation.SyntaxTrees)
+            {
+                var semanticModel = compilation.GetSemanticModel(syntaxTree);
+                var classDeclarations = (await syntaxTree.GetRootAsync()).DescendantNodes().OfType<ClassDeclarationSyntax>();
+
+                foreach (var classDecl in classDeclarations)
+                {
+                    if (semanticModel.GetDeclaredSymbol(classDecl) is INamedTypeSymbol classSymbol &&
+                        HasAttribute(classSymbol, "ApiEndpointAttribute"))
+                    {
+                        apiClasses.Add(BuildApiModel(classSymbol, projectPath));
+                    }
+                }
+            }
+            return apiClasses;
+        }
+
         private object BuildApiModel(INamedTypeSymbol classSymbol, string projectPath)
         {
-            _logger.LogInformation("Discovered API Endpoint class: {ClassName}", classSymbol.Name);
-
-            var apiModel = new
+            _logger.LogInformation("  -> Discovered API Endpoint class: {ClassName}", classSymbol.ToDisplayString());
+            return new
             {
                 ClassName = classSymbol.Name,
                 Namespace = classSymbol.ContainingNamespace.ToDisplayString(),
@@ -117,52 +132,38 @@ namespace x3squaredcircles.API.Assembler.Services
                     .Select(BuildMethodModel)
                     .ToList()
             };
-
-            return apiModel;
         }
 
-        private object BuildMethodModel(IMethodSymbol methodSymbol)
+        private object BuildMethodModel(IMethodSymbol methodSymbol) => new
         {
-            var methodModel = new
+            MethodName = methodSymbol.Name,
+            ReturnType = methodSymbol.ReturnType.ToDisplayString(),
+            HttpAttribute = GetHttpAttribute(methodSymbol),
+            RequiresAttributes = GetAttributes(methodSymbol, "RequiresAttribute"),
+            UseTemplatePaths = GetAttributeConstructorArguments(methodSymbol, "UseTemplateAttribute"),
+            Parameters = methodSymbol.Parameters.Select(p => new
             {
-                MethodName = methodSymbol.Name,
-                ReturnType = methodSymbol.ReturnType.ToDisplayString(),
-                HttpAttribute = GetHttpAttribute(methodSymbol),
-                RequiresAttributes = GetAttributes(methodSymbol, "RequiresAttribute"),
-                UseTemplatePaths = GetAttributeConstructorArguments(methodSymbol, "UseTemplateAttribute"),
-                Parameters = methodSymbol.Parameters.Select(p => new
-                {
-                    Name = p.Name,
-                    Type = p.Type.ToDisplayString()
-                }).ToList()
-            };
+                p.Name,
+                Type = p.Type.ToDisplayString()
+            }).ToList()
+        };
 
-            return methodModel;
-        }
+        private bool HasAttribute(ISymbol symbol, string attributeName) =>
+            symbol.GetAttributes().Any(ad => ad.AttributeClass?.Name == attributeName);
 
-        private bool HasAttribute(ISymbol symbol, string attributeName)
-        {
-            return symbol.GetAttributes().Any(ad => ad.AttributeClass?.Name == attributeName);
-        }
+        private bool HasHttpAttribute(ISymbol symbol) =>
+            symbol.GetAttributes().Any(ad => ad.AttributeClass?.BaseType?.Name == "HttpOperationAttribute");
 
-        private bool HasHttpAttribute(ISymbol symbol)
-        {
-            return symbol.GetAttributes().Any(ad => ad.AttributeClass?.BaseType?.Name == "HttpOperationAttribute");
-        }
+        private string? GetAttributeConstructorArgument(ISymbol symbol, string attributeName) =>
+            symbol.GetAttributes()
+                  .FirstOrDefault(ad => ad.AttributeClass?.Name == attributeName)?
+                  .ConstructorArguments.FirstOrDefault().Value?.ToString();
 
-        private string? GetAttributeConstructorArgument(ISymbol symbol, string attributeName)
-        {
-            var attribute = symbol.GetAttributes().FirstOrDefault(ad => ad.AttributeClass?.Name == attributeName);
-            return attribute?.ConstructorArguments.FirstOrDefault().Value?.ToString();
-        }
-
-        private List<string?> GetAttributeConstructorArguments(ISymbol symbol, string attributeName)
-        {
-            return symbol.GetAttributes()
-                         .Where(ad => ad.AttributeClass?.Name == attributeName)
-                         .Select(ad => ad.ConstructorArguments.FirstOrDefault().Value?.ToString())
-                         .ToList();
-        }
+        private List<string?> GetAttributeConstructorArguments(ISymbol symbol, string attributeName) =>
+            symbol.GetAttributes()
+                  .Where(ad => ad.AttributeClass?.Name == attributeName)
+                  .Select(ad => ad.ConstructorArguments.FirstOrDefault().Value?.ToString())
+                  .ToList();
 
         private object GetHttpAttribute(ISymbol symbol)
         {
@@ -170,7 +171,7 @@ namespace x3squaredcircles.API.Assembler.Services
             return new
             {
                 Type = attribute.AttributeClass?.Name.Replace("Attribute", ""),
-                Route = attribute.ConstructorArguments.FirstOrDefault().Value?.ToString()
+                Route = attribute.ConstructorArguments.FirstOrDefault().Value?.ToString() ?? "/"
             };
         }
 
@@ -193,22 +194,22 @@ namespace x3squaredcircles.API.Assembler.Services
         private string? FindProjectFileForAssembly(string assemblyPath)
         {
             var assemblyDir = Path.GetDirectoryName(assemblyPath);
-            if (assemblyDir == null) return null;
+            if (string.IsNullOrEmpty(assemblyDir)) return null;
 
-            var assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
-
+            // Heuristic: Assume the project file lives in a parent directory.
             var currentDir = new DirectoryInfo(assemblyDir);
             while (currentDir != null)
             {
-                var projectFiles = Directory.GetFiles(currentDir.FullName, $"{assemblyName}.csproj");
+                var projectFiles = currentDir.GetFiles("*.csproj");
                 if (projectFiles.Any())
                 {
-                    return projectFiles.First();
+                    return projectFiles.First().FullName;
                 }
                 currentDir = currentDir.Parent;
             }
 
-            return Directory.GetFiles(assemblyDir, "*.csproj", SearchOption.AllDirectories).FirstOrDefault();
+            _logger.LogWarning("Could not find project file for assembly '{Assembly}' by traversing parent directories.", assemblyPath);
+            return null;
         }
     }
 }

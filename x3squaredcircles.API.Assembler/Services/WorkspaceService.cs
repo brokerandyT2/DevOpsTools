@@ -11,64 +11,71 @@ namespace x3squaredcircles.API.Assembler.Services
     public interface IWorkspaceService
     {
         /// <summary>
-        /// Initializes a new workspace for a `generate` run.
+        /// Initializes a new workspace for a `generate` run, creating a unique directory
+        /// for internal artifacts and a pointer file for subsequent steps.
         /// </summary>
-        /// <param name="baseOutputDirectory">The root output directory specified by the user.</param>
-        /// <returns>The path to the newly created, unique workspace directory.</returns>
-        string InitializeForGenerate(string baseOutputDirectory);
+        /// <returns>The path to the newly created, unique managed workspace directory.</returns>
+        string InitializeForGenerate();
 
         /// <summary>
-        /// Resolves the workspace for a `deploy` run.
+        /// Resolves the active workspace for a `deploy` run by reading the pointer file.
         /// </summary>
-        /// <returns>The path to the active workspace directory for the current pipeline run.</returns>
+        /// <returns>The path to the active managed workspace directory for the current pipeline run.</returns>
         string ResolveForDeploy();
     }
 
     /// <summary>
     /// Manages the creation and resolution of the unique, GUID-named workspace directory
     /// that contains all generated artifacts and metadata for a single pipeline run.
+    /// It uses a pointer file in the root to pass state between CI/CD steps.
     /// </summary>
     public class WorkspaceService : IWorkspaceService
     {
-        private const string ManifestFileName = "3sc-assembler.manifest";
-        private const string WorkspaceDirName = ".3sc-workspaces";
+        private const string PointerFileName = ".3sc-assembler-workspace"; // Hidden file to avoid clutter
+        private const string ManagedWorkspacesDirName = ".3sc-workspaces";
 
         private readonly ILogger<WorkspaceService> _logger;
-        private readonly string _pipelineWorkspaceRoot;
+        private readonly AssemblerConfiguration _config;
+        private readonly string _pipelineRoot;
 
-        public WorkspaceService(ILogger<WorkspaceService> logger)
+        public WorkspaceService(ILogger<WorkspaceService> logger, AssemblerConfiguration config)
         {
             _logger = logger;
+            _config = config;
             // Assumes the tool is run from the root of the pipeline's checkout directory.
-            _pipelineWorkspaceRoot = Directory.GetCurrentDirectory();
+            _pipelineRoot = Directory.GetCurrentDirectory();
         }
 
-        public string InitializeForGenerate(string baseOutputDirectory)
+        public string InitializeForGenerate()
         {
             try
             {
                 var runGuid = Guid.NewGuid();
                 _logger.LogInformation("Initializing new workspace with Generation ID: {Guid}", runGuid);
 
-                var managedWorkspacePath = Path.Combine(_pipelineWorkspaceRoot, WorkspaceDirName, runGuid.ToString());
+                // This is the hidden directory for our internal state and artifacts.
+                var managedWorkspacePath = Path.Combine(_pipelineRoot, ManagedWorkspacesDirName, runGuid.ToString());
                 Directory.CreateDirectory(managedWorkspacePath);
                 _logger.LogDebug("Created managed workspace directory: {Path}", managedWorkspacePath);
 
-                // Create the pointer manifest in the root of the pipeline workspace.
-                var pointerManifestPath = Path.Combine(_pipelineWorkspaceRoot, ManifestFileName);
-                File.WriteAllText(pointerManifestPath, runGuid.ToString());
-                _logger.LogInformation("Created pointer manifest file at: {Path}", pointerManifestPath);
+                // This file is the "bridge" between the 'generate' and 'deploy' steps.
+                var pointerFilePath = Path.Combine(_pipelineRoot, PointerFileName);
+                File.WriteAllText(pointerFilePath, runGuid.ToString());
+                _logger.LogInformation("Created workspace pointer file at: {Path}", pointerFilePath);
 
-                // Create the user-visible output directory
-                Directory.CreateDirectory(baseOutputDirectory);
+                // Ensure the user-visible output directory from the configuration exists.
+                if (!Directory.Exists(_config.OutputPath))
+                {
+                    _logger.LogDebug("Creating user-specified output directory: {Path}", _config.OutputPath);
+                    Directory.CreateDirectory(_config.OutputPath);
+                }
 
-                // Return the path to the managed workspace where internal artifacts will be stored.
                 return managedWorkspacePath;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to initialize workspace for generate command.");
-                throw new AssemblerException(AssemblerExitCode.GenerationFailure, "Could not create workspace directory.", ex);
+                throw new AssemblerException(AssemblerExitCode.GenerationFailure, "Could not create workspace directory. Check file system permissions.", ex);
             }
         }
 
@@ -76,25 +83,27 @@ namespace x3squaredcircles.API.Assembler.Services
         {
             try
             {
-                var pointerManifestPath = Path.Combine(_pipelineWorkspaceRoot, ManifestFileName);
-                if (!File.Exists(pointerManifestPath))
+                var pointerFilePath = Path.Combine(_pipelineRoot, PointerFileName);
+                if (!File.Exists(pointerFilePath))
                 {
+                    _logger.LogError("Workspace pointer file not found at '{Path}'.", pointerFilePath);
                     throw new AssemblerException(AssemblerExitCode.InvalidConfiguration,
-                        $"Workspace manifest '{ManifestFileName}' not found in the current directory. Ensure the 'generate' command was run first in a previous step.");
+                        $"Workspace pointer file '{PointerFileName}' not found. Ensure the 'generate' command was run in a previous step and that the workspace is persisted.");
                 }
 
-                var runGuid = File.ReadAllText(pointerManifestPath).Trim();
+                var runGuid = File.ReadAllText(pointerFilePath).Trim();
                 if (!Guid.TryParse(runGuid, out _))
                 {
                     throw new AssemblerException(AssemblerExitCode.InvalidConfiguration,
-                       $"Invalid GUID found in workspace manifest file: {runGuid}");
+                       $"Invalid GUID found in workspace pointer file: {runGuid}");
                 }
 
                 _logger.LogInformation("Resolved active workspace with Generation ID: {Guid}", runGuid);
 
-                var managedWorkspacePath = Path.Combine(_pipelineWorkspaceRoot, WorkspaceDirName, runGuid);
+                var managedWorkspacePath = Path.Combine(_pipelineRoot, ManagedWorkspacesDirName, runGuid);
                 if (!Directory.Exists(managedWorkspacePath))
                 {
+                    _logger.LogError("The resolved workspace directory '{Path}' does not exist.", managedWorkspacePath);
                     throw new AssemblerException(AssemblerExitCode.InvalidConfiguration,
                        $"The workspace directory for run '{runGuid}' could not be found. Ensure the workspace artifact was correctly passed from the generate step.");
                 }
@@ -104,12 +113,12 @@ namespace x3squaredcircles.API.Assembler.Services
             }
             catch (AssemblerException)
             {
-                throw; // Re-throw our specific exceptions.
+                throw; // Re-throw our specific, handled exceptions.
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to resolve workspace for deploy command.");
-                throw new AssemblerException(AssemblerExitCode.DeploymentFailure, "Could not resolve active workspace.", ex);
+                throw new AssemblerException(AssemblerExitCode.DeploymentFailure, "Could not resolve active workspace due to an unexpected error.", ex);
             }
         }
     }

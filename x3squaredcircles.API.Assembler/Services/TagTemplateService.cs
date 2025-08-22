@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using x3squaredcircles.API.Assembler.Configuration;
 using x3squaredcircles.API.Assembler.Models;
 
 namespace x3squaredcircles.API.Assembler.Services
@@ -27,6 +26,7 @@ namespace x3squaredcircles.API.Assembler.Services
         private readonly AssemblerConfiguration _config;
         private readonly ILogger<TagTemplateService> _logger;
 
+        // The single source of truth for all supported tokens in this service.
         private readonly HashSet<string> _supportedTokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "branch", "repo", "version", "major", "minor", "patch",
@@ -45,7 +45,7 @@ namespace x3squaredcircles.API.Assembler.Services
 
         public async Task<TagTemplateResult> GenerateTagAsync()
         {
-            var template = _config.TagTemplate;
+            var template = _config.TagTemplate.Template;
             _logger.LogInformation("Generating tag from template: {Template}", template);
 
             try
@@ -64,17 +64,16 @@ namespace x3squaredcircles.API.Assembler.Services
                     GenerationTime = DateTime.UtcNow
                 };
             }
+            catch (AssemblerException)
+            {
+                // Re-throw our specific, handled exceptions to fail the pipeline cleanly.
+                throw;
+            }
             catch (Exception ex)
             {
-                var fallbackTag = $"generation-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
+                var fallbackTag = $"generation-error-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
                 _logger.LogError(ex, "Failed to generate tag from template. Using fallback tag: {Tag}", fallbackTag);
-                return new TagTemplateResult
-                {
-                    Template = "fallback",
-                    GeneratedTag = fallbackTag,
-                    TokenValues = new Dictionary<string, string> { { "error", ex.Message } },
-                    GenerationTime = DateTime.UtcNow
-                };
+                throw new AssemblerException(AssemblerExitCode.GenerationFailure, $"Tag generation failed: {ex.Message}", ex);
             }
         }
 
@@ -86,7 +85,9 @@ namespace x3squaredcircles.API.Assembler.Services
             tokens["repo"] = await _gitOperationsService.GetRepositoryNameAsync();
             tokens["commit-hash"] = await _gitOperationsService.GetCommitHashAsync();
 
-            var version = "1.0.0"; // Placeholder for a more sophisticated versioning scheme
+            // Placeholder for a more sophisticated versioning scheme from Keystone.
+            // For Assembler, a static version is acceptable as a fallback.
+            var version = "1.0.0";
             tokens["version"] = version;
             var versionParts = version.Split('.');
             tokens["major"] = versionParts.Length > 0 ? versionParts[0] : "1";
@@ -99,9 +100,9 @@ namespace x3squaredcircles.API.Assembler.Services
 
             tokens["cloud"] = _config.Cloud;
 
-            // Note: {group} is contextual and will be replaced per-group if needed by downstream consumers.
-            // For a single run-level tag, it's often omitted or replaced with a placeholder.
-            tokens["group"] = "multi-group";
+            // Note: {group} is a contextual token. It will be replaced with a placeholder here
+            // and can be replaced with the actual group name by the consumer of this result.
+            tokens["group"] = "{group}";
 
             _logger.LogDebug("Resolved {TokenCount} template tokens.", tokens.Count);
             return tokens;
@@ -114,11 +115,24 @@ namespace x3squaredcircles.API.Assembler.Services
             {
                 result = result.Replace($"{{{token.Key}}}", token.Value, StringComparison.OrdinalIgnoreCase);
             }
-            return result;
+            return SanitizeTag(result);
+        }
+
+        private string SanitizeTag(string tag)
+        {
+            // Replace invalid characters for Git tags or Docker tags with a hyphen.
+            // This is a basic sanitization; more complex rules could be added.
+            var sanitized = Regex.Replace(tag, @"[^a-zA-Z0-9_.-]", "-");
+            return sanitized;
         }
 
         private void ValidateTemplate(string template)
         {
+            if (string.IsNullOrWhiteSpace(template))
+            {
+                throw new AssemblerException(AssemblerExitCode.InvalidConfiguration, "Tag template string cannot be empty.");
+            }
+
             var tokenMatches = Regex.Matches(template, @"\{([^}]+)\}");
             var unsupportedTokens = tokenMatches.Cast<Match>()
                 .Select(m => m.Groups[1].Value)
@@ -127,20 +141,9 @@ namespace x3squaredcircles.API.Assembler.Services
 
             if (unsupportedTokens.Any())
             {
-                var message = $"Template contains unsupported tokens: {string.Join(", ", unsupportedTokens)}. Supported tokens are: {string.Join(", ", _supportedTokens)}";
+                var message = $"Template '{template}' contains unsupported tokens: {string.Join(", ", unsupportedTokens.Select(t => $"{{{t}}}"))}. Supported tokens are: {string.Join(", ", _supportedTokens)}";
                 throw new AssemblerException(AssemblerExitCode.InvalidConfiguration, message);
             }
         }
-    }
-
-    /// <summary>
-    /// Represents the result of the tag template resolution process.
-    /// </summary>
-    public class TagTemplateResult
-    {
-        public string Template { get; set; } = string.Empty;
-        public string GeneratedTag { get; set; } = string.Empty;
-        public Dictionary<string, string> TokenValues { get; set; } = new Dictionary<string, string>();
-        public DateTime GenerationTime { get; set; }
     }
 }

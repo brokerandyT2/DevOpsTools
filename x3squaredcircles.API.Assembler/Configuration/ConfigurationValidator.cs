@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.Logging;
 using System.Collections.Generic;
+using System.Linq;
 using x3squaredcircles.API.Assembler.Models;
 
 namespace x3squaredcircles.API.Assembler.Configuration
@@ -26,27 +27,26 @@ namespace x3squaredcircles.API.Assembler.Configuration
             var errors = new List<string>();
             _logger.LogDebug("Starting configuration validation process.");
 
-            // Validate language and cloud selections
+            // The 'isRequired' flag in the loader handles most presence checks.
+            // This method is for validating the *content* of the variables.
+
             if (string.IsNullOrWhiteSpace(config.Language))
             {
-                errors.Add("No source language specified. Set exactly one language flag to true (e.g., LANGUAGE_CSHARP=true).");
+                errors.Add("No source language specified. Use ASSEMBLER_LANGUAGE or 3SC_LANGUAGE to set a supported language (e.g., 'csharp').");
             }
+
             if (string.IsNullOrWhiteSpace(config.Cloud))
             {
-                errors.Add("No target cloud specified. Set exactly one cloud flag to true (e.g., CLOUD_AZURE=true).");
+                errors.Add("No target cloud specified. Use ASSEMBLER_CLOUD_PROVIDER or 3SC_CLOUD_PROVIDER to set a supported cloud (e.g., 'azure').");
             }
 
-            // Validate required core settings
-            if (string.IsNullOrWhiteSpace(config.RepoUrl)) errors.Add("Required environment variable REPO_URL is not set.");
-            if (string.IsNullOrWhiteSpace(config.Branch)) errors.Add("Required environment variable BRANCH is not set.");
-            if (string.IsNullOrWhiteSpace(config.AssemblerEnv)) errors.Add("Required environment variable ASSEMBLER_ENV is not set.");
-            if (string.IsNullOrWhiteSpace(config.License.ServerUrl)) errors.Add("Required environment variable LICENSE_SERVER is not set.");
+            // Example of a more complex, cross-variable validation
+            if (!string.IsNullOrWhiteSpace(config.Vault.Url) && string.IsNullOrWhiteSpace(config.Vault.Type))
+            {
+                errors.Add("If ASSEMBLER_VAULT_URL or 3SC_VAULT_URL is set, you must also specify a vault type using ASSEMBLER_VAULT_TYPE or 3SC_VAULT_TYPE.");
+            }
 
-            // Validate required paths
-            if (string.IsNullOrWhiteSpace(config.Libs)) errors.Add("Required environment variable ASSEMBLER_LIBS is not set.");
-            if (string.IsNullOrWhiteSpace(config.Sources)) errors.Add("Required environment variable ASSEMBLER_SOURCES is not set.");
-
-            if (errors.Count > 0)
+            if (errors.Any())
             {
                 var errorMessage = $"Configuration validation failed with {errors.Count} error(s):\n- {string.Join("\n- ", errors)}";
                 _logger.LogError(errorMessage);

@@ -20,7 +20,7 @@ namespace x3squaredcircles.API.Assembler.Services
 
     /// <summary>
     /// Implements the "Hybrid Dependency Management" model by interrogating project files (.csproj)
-    /// to discover existing dependencies and their versions.
+    /// to discover existing dependencies and their versions, including transitive project references.
     /// </summary>
     public class DependencyInferenceService : IDependencyInferenceService
     {
@@ -35,92 +35,88 @@ namespace x3squaredcircles.API.Assembler.Services
         {
             _logger.LogInformation("Inferring dependencies from source business logic projects...");
             var allDependencies = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var parsedProjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // For circular dependency protection
 
             var projectPaths = apisForGroup
-                .Select(api => api.GetProperty("projectPath").GetString())
+                .Select(api => api.TryGetProperty("projectPath", out var pathProp) ? pathProp.GetString() : null)
                 .Where(path => !string.IsNullOrEmpty(path))
-                .Distinct()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
             if (!projectPaths.Any())
             {
-                _logger.LogWarning("No source project paths were discovered. Cannot infer any dependencies.");
+                _logger.LogWarning("No source project paths were discovered in the API metadata. Cannot infer any dependencies.");
                 return allDependencies;
             }
 
             foreach (var projectPath in projectPaths)
             {
-                if (!File.Exists(projectPath))
-                {
-                    _logger.LogWarning("Project file specified in discovered API metadata not found, cannot infer dependencies: {Path}", projectPath);
-                    continue;
-                }
-
-                try
-                {
-                    var dependencies = await ParseProjectFileAsync(projectPath);
-                    foreach (var dep in dependencies)
-                    {
-                        if (allDependencies.TryGetValue(dep.Key, out var existingVersion) && existingVersion != dep.Value)
-                        {
-                            _logger.LogWarning("Dependency conflict detected for package '{Package}'. Version '{Existing}' from one project and '{New}' from another. Using the latter.",
-                                dep.Key, existingVersion, dep.Value);
-                        }
-                        allDependencies[dep.Key] = dep.Value;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to parse dependencies from project file: {Path}", projectPath);
-                    // Continue to the next project file, don't fail the whole run.
-                }
+                await ParseProjectFileRecursiveAsync(projectPath, allDependencies, parsedProjects);
             }
 
             _logger.LogInformation("✓ Successfully inferred {Count} unique package dependencies.", allDependencies.Count);
             return allDependencies;
         }
 
-        private async Task<Dictionary<string, string>> ParseProjectFileAsync(string projectPath)
+        private async Task ParseProjectFileRecursiveAsync(string projectPath, Dictionary<string, string> allDependencies, HashSet<string> parsedProjects)
         {
-            var dependencies = new Dictionary<string, string>();
-            _logger.LogDebug("Parsing dependencies from: {Path}", projectPath);
-
-            var content = await File.ReadAllTextAsync(projectPath);
-            var xml = XDocument.Parse(content);
-            var ns = xml.Root.GetDefaultNamespace();
-
-            var packageReferences = xml.Descendants("PackageReference");
-            foreach (var reference in packageReferences)
+            var normalizedPath = Path.GetFullPath(projectPath);
+            if (parsedProjects.Contains(normalizedPath))
             {
-                var packageName = reference.Attribute("Include")?.Value;
-                var packageVersion = reference.Attribute("Version")?.Value;
-
-                if (!string.IsNullOrEmpty(packageName) && !string.IsNullOrEmpty(packageVersion))
-                {
-                    dependencies[packageName] = packageVersion;
-                    _logger.LogDebug("  - Found Package: {Package} Version: {Version}", packageName, packageVersion);
-                }
+                _logger.LogDebug("Skipping already parsed project to prevent circular dependency: {Path}", normalizedPath);
+                return;
             }
 
-            var projectReferences = xml.Descendants("ProjectReference");
-            foreach (var reference in projectReferences)
+            if (!File.Exists(normalizedPath))
             {
-                var includePath = reference.Attribute("Include")?.Value;
-                if (!string.IsNullOrEmpty(includePath))
-                {
-                    var referencedProjectPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(projectPath), includePath));
-                    _logger.LogDebug("  - Found Project Reference, recursively parsing: {Path}", referencedProjectPath);
+                _logger.LogWarning("Project file specified in discovered API metadata not found, cannot infer dependencies: {Path}", normalizedPath);
+                return;
+            }
 
-                    // Recurse to find dependencies of referenced projects
-                    var transitiveDependencies = await ParseProjectFileAsync(referencedProjectPath);
-                    foreach (var dep in transitiveDependencies)
+            parsedProjects.Add(normalizedPath);
+            _logger.LogDebug("Parsing dependencies from: {Path}", normalizedPath);
+
+            try
+            {
+                var doc = await XDocument.LoadAsync(File.OpenRead(normalizedPath), LoadOptions.None, CancellationToken.None);
+
+                // Handle PackageReference
+                var packageReferences = doc.Descendants("PackageReference");
+                foreach (var reference in packageReferences)
+                {
+                    var packageName = reference.Attribute("Include")?.Value;
+                    var packageVersion = reference.Attribute("Version")?.Value;
+
+                    if (!string.IsNullOrEmpty(packageName) && !string.IsNullOrEmpty(packageVersion))
                     {
-                        dependencies[dep.Key] = dep.Value;
+                        if (allDependencies.TryGetValue(packageName, out var existingVersion) && existingVersion != packageVersion)
+                        {
+                            _logger.LogWarning("Dependency conflict detected for package '{Package}'. Version '{Existing}' from one project and '{New}' from another. Using the latter.",
+                                packageName, existingVersion, packageVersion);
+                        }
+                        allDependencies[packageName] = packageVersion;
+                        _logger.LogDebug("  - Found Package: {Package} Version: {Version}", packageName, packageVersion);
+                    }
+                }
+
+                // Handle ProjectReference (Recurse)
+                var projectReferences = doc.Descendants("ProjectReference");
+                foreach (var reference in projectReferences)
+                {
+                    var includePath = reference.Attribute("Include")?.Value;
+                    if (!string.IsNullOrEmpty(includePath))
+                    {
+                        var referencedProjectPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(normalizedPath)!, includePath));
+                        _logger.LogDebug("  - Found Project Reference, recursively parsing: {Path}", referencedProjectPath);
+                        await ParseProjectFileRecursiveAsync(referencedProjectPath, allDependencies, parsedProjects);
                     }
                 }
             }
-
-            return dependencies;
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to parse dependencies from project file: {Path}. This project's dependencies will be skipped.", normalizedPath);
+                // We log the error but do not fail the entire run, allowing the process to be resilient.
+            }
         }
     }
 }

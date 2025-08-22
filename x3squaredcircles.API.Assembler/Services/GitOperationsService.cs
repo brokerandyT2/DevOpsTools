@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using x3squaredcircles.API.Assembler.Models;
 
 namespace x3squaredcircles.API.Assembler.Services
 {
@@ -19,92 +20,86 @@ namespace x3squaredcircles.API.Assembler.Services
 
     /// <summary>
     /// Provides functionality for interacting with a Git repository from the command line.
-    /// Used to gather context for forensic logging and tag generation.
+    /// It sources core context (repo, branch) from the central configuration and executes commands for runtime data.
     /// </summary>
     public class GitOperationsService : IGitOperationsService
     {
         private readonly ILogger<GitOperationsService> _logger;
+        private readonly AssemblerConfiguration _config;
         private readonly string _workingDirectory = "/src"; // Assumes running in a container with a mounted volume
 
-        public GitOperationsService(ILogger<GitOperationsService> logger)
+        public GitOperationsService(ILogger<GitOperationsService> logger, AssemblerConfiguration config)
         {
             _logger = logger;
+            _config = config;
         }
 
-        public async Task<string> GetCurrentBranchAsync()
+        /// <summary>
+        /// Returns the current branch name directly from the validated configuration.
+        /// </summary>
+        public Task<string> GetCurrentBranchAsync()
         {
+            // The branch is now sourced from the 3SC_BRANCH or ASSEMBLER_BRANCH variable.
+            // No need for complex CI variable sniffing.
+            if (string.IsNullOrWhiteSpace(_config.Branch))
+            {
+                _logger.LogWarning("Branch name is not configured. Falling back to 'unknown'.");
+                return Task.FromResult("unknown");
+            }
+            _logger.LogDebug("Resolved branch name from configuration: {BranchName}", _config.Branch);
+            return Task.FromResult(_config.Branch);
+        }
+
+        /// <summary>
+        /// Returns the repository name derived from the configured RepoUrl.
+        /// </summary>
+        public Task<string> GetRepositoryNameAsync()
+        {
+            // The repo URL is now sourced from the 3SC_REPO_URL or ASSEMBLER_REPO_URL variable.
+            if (string.IsNullOrWhiteSpace(_config.RepoUrl))
+            {
+                _logger.LogWarning("Repository URL is not configured. Falling back to 'unknown-repo'.");
+                return Task.FromResult("unknown-repo");
+            }
+
             try
             {
-                var result = await ExecuteGitCommandAsync("rev-parse --abbrev-ref HEAD");
-                if (result.Success && !string.IsNullOrWhiteSpace(result.Output) && !result.Output.Trim().Equals("HEAD", StringComparison.OrdinalIgnoreCase))
-                {
-                    return result.Output.Trim();
-                }
-
-                var ciBranch = GetBranchFromCIEnvironment();
-                if (!string.IsNullOrEmpty(ciBranch))
-                {
-                    _logger.LogDebug("Resolved branch name from CI environment variable: {BranchName}", ciBranch);
-                    return ciBranch;
-                }
-
-                _logger.LogWarning("Could not determine current branch name. Falling back to 'unknown'.");
-                return "unknown";
+                var repoName = _config.RepoUrl.Split('/').LastOrDefault()?.Replace(".git", "", StringComparison.OrdinalIgnoreCase);
+                var result = repoName ?? "unknown-repo";
+                _logger.LogDebug("Resolved repository name '{RepoName}' from URL '{RepoUrl}'", result, _config.RepoUrl);
+                return Task.FromResult(result);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to get current branch name, using fallback 'unknown'.");
-                return "unknown";
+                _logger.LogWarning(ex, "Failed to parse repository name from configured URL '{RepoUrl}'. Falling back to 'unknown-repo'.", _config.RepoUrl);
+                return Task.FromResult("unknown-repo");
             }
         }
 
-        public async Task<string> GetRepositoryNameAsync()
-        {
-            try
-            {
-                var result = await ExecuteGitCommandAsync("config --get remote.origin.url");
-                if (result.Success && !string.IsNullOrWhiteSpace(result.Output))
-                {
-                    var url = result.Output.Trim();
-                    var repoName = url.Split('/').LastOrDefault()?.Replace(".git", "", StringComparison.OrdinalIgnoreCase);
-                    return repoName ?? "unknown-repo";
-                }
-
-                _logger.LogWarning("Could not determine Git remote URL. Falling back to directory name.");
-                return new System.IO.DirectoryInfo(_workingDirectory).Name;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to get repository name, using fallback 'unknown-repo'.");
-                return "unknown-repo";
-            }
-        }
-
+        /// <summary>
+        /// Executes a git command to get the current commit hash at runtime.
+        /// </summary>
         public async Task<string> GetCommitHashAsync(bool full = false)
         {
             try
             {
                 var args = full ? "rev-parse HEAD" : "rev-parse --short HEAD";
-                var result = await ExecuteGitCommandAsync(args);
-                if (result.Success && !string.IsNullOrWhiteSpace(result.Output))
+                var (success, output, error) = await ExecuteGitCommandAsync(args);
+
+                if (success && !string.IsNullOrWhiteSpace(output))
                 {
-                    return result.Output.Trim();
+                    return output.Trim();
                 }
+
+                _logger.LogWarning("Git command to get commit hash failed. Error: {Error}", error);
                 return "unknown";
+
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to get commit hash, using fallback 'unknown'.");
                 return "unknown";
             }
-        }
-
-        private string GetBranchFromCIEnvironment()
-        {
-            return Environment.GetEnvironmentVariable("BUILD_SOURCEBRANCHNAME")      // Azure DevOps
-                ?? Environment.GetEnvironmentVariable("GITHUB_REF_NAME")             // GitHub Actions
-                ?? Environment.GetEnvironmentVariable("BRANCH_NAME")                 // Jenkins
-                ?? Environment.GetEnvironmentVariable("CI_COMMIT_REF_NAME");         // GitLab CI
         }
 
         private async Task<(bool Success, string Output, string Error)> ExecuteGitCommandAsync(string arguments)
@@ -121,25 +116,32 @@ namespace x3squaredcircles.API.Assembler.Services
                     UseShellExecute = false,
                     CreateNoWindow = true
                 }
+
             };
 
             var outputBuilder = new StringBuilder();
             var errorBuilder = new StringBuilder();
 
+            // Use TaskCompletionSource for more robust async process handling
+            var processExitCompletionSource = new TaskCompletionSource<int>();
+            process.Exited += (sender, args) => processExitCompletionSource.SetResult(process.ExitCode);
+            process.EnableRaisingEvents = true;
+
             process.OutputDataReceived += (_, args) => { if (args.Data != null) outputBuilder.AppendLine(args.Data); };
             process.ErrorDataReceived += (_, args) => { if (args.Data != null) errorBuilder.AppendLine(args.Data); };
 
             process.Start();
+
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
-            await process.WaitForExitAsync();
 
+            var exitCode = await processExitCompletionSource.Task;
             var output = outputBuilder.ToString().Trim();
             var error = errorBuilder.ToString().Trim();
 
-            if (process.ExitCode != 0)
+            if (exitCode != 0)
             {
-                _logger.LogDebug("Git command failed: git {Args}. Exit Code: {Code}. Error: {Error}", arguments, process.ExitCode, error);
+                _logger.LogDebug("Git command failed: git {Args}. Exit Code: {Code}. Error: {Error}", arguments, exitCode, error);
                 return (false, output, error);
             }
 

@@ -31,7 +31,7 @@ WORKDIR /app
 
 # Copy the published output from the build stage into the final image.
 COPY --from=build /app/publish .
-
+EXPOSE 8080
 # Define a mount point for the user's source code and any temporary git clones.
 # The CI/CD pipeline will mount the repository into this directory.
 VOLUME /src
@@ -39,4 +39,4 @@ VOLUME /tmp
 
 # Set the entry point for the container.
 # When the container runs, it will execute our DataLink application.
-ENTRYPOINT ["dotnet", "API.dll"]
+ENTRYPOINT ["dotnet", "x3squaredcircles.API.Assembler.dll"]

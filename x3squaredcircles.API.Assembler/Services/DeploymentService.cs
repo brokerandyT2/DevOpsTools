@@ -1,11 +1,14 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using x3squaredcircles.API.Assembler.Configuration;
 using x3squaredcircles.API.Assembler.Models;
 
 namespace x3squaredcircles.API.Assembler.Services
@@ -25,7 +28,7 @@ namespace x3squaredcircles.API.Assembler.Services
 
     public interface ICloudDeploymentProvider
     {
-        Task DeployAsync(JsonElement deployable, string artifactPath);
+        Task DeployAsync(JsonElement deployable, string artifactPath, AssemblerConfiguration config);
         bool VerifyArtifact(string pattern, string artifactPath);
     }
 
@@ -36,15 +39,23 @@ namespace x3squaredcircles.API.Assembler.Services
     public class DeploymentService : IDeploymentService
     {
         private readonly ILogger<DeploymentService> _logger;
+        private readonly AssemblerConfiguration _config;
         private readonly ICloudProviderFactory _cloudProviderFactory;
+        private readonly IControlPointService _controlPointService;
 
-        public DeploymentService(ILogger<DeploymentService> logger, ICloudProviderFactory cloudProviderFactory)
+        public DeploymentService(
+            ILogger<DeploymentService> logger,
+            AssemblerConfiguration config,
+            ICloudProviderFactory cloudProviderFactory,
+            IControlPointService controlPointService)
         {
             _logger = logger;
+            _config = config;
             _cloudProviderFactory = cloudProviderFactory;
+            _controlPointService = controlPointService;
         }
 
-        public async Task VerifyArtifactAsync(JsonElement deployable, string artifactPath)
+        public Task VerifyArtifactAsync(JsonElement deployable, string artifactPath)
         {
             var groupName = deployable.GetProperty("groupName").GetString();
             var cloud = deployable.GetProperty("cloud").GetString()?.ToLowerInvariant();
@@ -52,13 +63,13 @@ namespace x3squaredcircles.API.Assembler.Services
 
             _logger.LogInformation("Verifying artifact at '{ArtifactPath}' for group '{Group}' targeting {Cloud}/{Pattern}.", artifactPath, groupName, cloud, pattern);
 
-            if (!Directory.Exists(artifactPath) && !File.Exists(artifactPath))
+            if (!File.Exists(artifactPath))
             {
-                throw new AssemblerException(AssemblerExitCode.ArtifactVerificationFailure, $"Artifact path not found: {artifactPath}");
+                throw new AssemblerException(AssemblerExitCode.ArtifactVerificationFailure, $"Artifact file not found: {artifactPath}");
             }
 
-            var provider = _cloudProviderFactory.Create(cloud);
-            var isVerified = provider.VerifyArtifact(pattern, artifactPath);
+            var provider = _cloudProviderFactory.Create(cloud!);
+            var isVerified = provider.VerifyArtifact(pattern!, artifactPath);
 
             if (!isVerified)
             {
@@ -66,26 +77,65 @@ namespace x3squaredcircles.API.Assembler.Services
             }
 
             _logger.LogInformation("✓ Artifact verification successful for group '{Group}'.", groupName);
-            await Task.CompletedTask;
+            return Task.CompletedTask;
         }
 
         public async Task DeployAsync(JsonElement deployable, string artifactPath)
         {
             var groupName = deployable.GetProperty("groupName").GetString();
+
+            var deploymentToolControlPoint = Environment.GetEnvironmentVariable("ASSEMBLER_CP_DEPLOYMENT_TOOL");
+
+            if (!string.IsNullOrWhiteSpace(deploymentToolControlPoint))
+            {
+                _logger.LogInformation("Custom deployment tool specified. Invoking Control Point for group '{Group}'.", groupName);
+                await InvokeDeploymentToolControlPoint(deploymentToolControlPoint, deployable, artifactPath);
+            }
+            else
+            {
+                _logger.LogInformation("Using built-in deployment provider for group '{Group}'.", groupName);
+                await ExecuteBuiltInDeployment(deployable, artifactPath);
+            }
+        }
+
+        private async Task ExecuteBuiltInDeployment(JsonElement deployable, string artifactPath)
+        {
+            var groupName = deployable.GetProperty("groupName").GetString();
             var cloud = deployable.GetProperty("cloud").GetString()?.ToLowerInvariant();
 
-            _logger.LogInformation("Initiating deployment of artifact '{ArtifactPath}' for group '{Group}' to cloud provider '{Cloud}'.", artifactPath, groupName, cloud);
+            _logger.LogInformation("Initiating deployment of artifact '{ArtifactPath}' for group '{Group}' to built-in provider '{Cloud}'.", artifactPath, groupName, cloud);
 
-            var provider = _cloudProviderFactory.Create(cloud);
-            await provider.DeployAsync(deployable, artifactPath);
+            var provider = _cloudProviderFactory.Create(cloud!);
+            await provider.DeployAsync(deployable, artifactPath, _config);
 
-            _logger.LogInformation("✓ Deployment command execution for group '{Group}' completed.", groupName);
+            _logger.LogInformation("✓ Built-in deployment for group '{Group}' completed.", groupName);
+        }
+
+        private async Task InvokeDeploymentToolControlPoint(string endpointUrl, JsonElement deployable, string artifactPath)
+        {
+            var payload = new
+            {
+                deployable,
+                artifactPath,
+                configuration = _config
+            };
+
+            var response = await _controlPointService.InvokeBlockingRequestAsync(endpointUrl, "DEPLOYMENT_TOOL", payload);
+
+            if (!response.IsSuccess)
+            {
+                throw new AssemblerException(AssemblerExitCode.DeploymentFailure, $"Custom Deployment Tool Control Point failed: {response.ResponseMessage}");
+            }
+
+            _logger.LogInformation("✓ Custom Deployment Tool Control Point for deployment completed successfully.");
         }
     }
 
     public class CloudProviderFactory : ICloudProviderFactory
     {
         private readonly IServiceProvider _serviceProvider;
+        private static readonly string[] SupportedProviders = { "azure", "aws", "gcp", "oracle", "mulesoft", "ibmwebsphere", "ibmdatapower", "ibmapiconnect", "apachecamel", "redhatfuse", "tibcobusinessworks", "local" };
+
         public CloudProviderFactory(IServiceProvider serviceProvider)
         {
             _serviceProvider = serviceProvider;
@@ -93,22 +143,35 @@ namespace x3squaredcircles.API.Assembler.Services
 
         public ICloudDeploymentProvider Create(string cloudProviderName)
         {
-            return cloudProviderName.ToLowerInvariant() switch
+            var providerKey = cloudProviderName.ToLowerInvariant();
+            if (!SupportedProviders.Contains(providerKey))
             {
-                "azure" => (ICloudDeploymentProvider)_serviceProvider.GetService(typeof(AzureDeploymentProvider)),
-                "aws" => (ICloudDeploymentProvider)_serviceProvider.GetService(typeof(AwsDeploymentProvider)),
-                "gcp" => (ICloudDeploymentProvider)_serviceProvider.GetService(typeof(GcpDeploymentProvider)),
-                "oracle" => (ICloudDeploymentProvider)_serviceProvider.GetService(typeof(OracleDeploymentProvider)),
-                "mulesoft" => (ICloudDeploymentProvider)_serviceProvider.GetService(typeof(MuleSoftDeploymentProvider)),
-                "ibmwebsphere" => (ICloudDeploymentProvider)_serviceProvider.GetService(typeof(IbmWebSphereDeploymentProvider)),
-                "ibmdatapower" => (ICloudDeploymentProvider)_serviceProvider.GetService(typeof(IbmDataPowerDeploymentProvider)),
-                "ibmapiconnect" => (ICloudDeploymentProvider)_serviceProvider.GetService(typeof(IbmApiConnectDeploymentProvider)),
-                "apachecamel" => (ICloudDeploymentProvider)_serviceProvider.GetService(typeof(ApacheCamelDeploymentProvider)),
-                "redhatfuse" => (ICloudDeploymentProvider)_serviceProvider.GetService(typeof(RedHatFuseDeploymentProvider)),
-                "tibcobusinessworks" => (ICloudDeploymentProvider)_serviceProvider.GetService(typeof(TibcoBusinessWorksDeploymentProvider)),
-                "local" => (ICloudDeploymentProvider)_serviceProvider.GetService(typeof(LocalDeploymentProvider)),
-                _ => throw new AssemblerException(AssemblerExitCode.InvalidConfiguration, $"Deployment to cloud provider '{cloudProviderName}' is not supported."),
-            };
+                throw new AssemblerException(AssemblerExitCode.InvalidConfiguration, $"Deployment to cloud provider '{cloudProviderName}' is not supported. Supported providers are: {string.Join(", ", SupportedProviders)}");
+            }
+
+            try
+            {
+                return providerKey switch
+                {
+                    "azure" => _serviceProvider.GetRequiredService<AzureDeploymentProvider>(),
+                    "aws" => _serviceProvider.GetRequiredService<AwsDeploymentProvider>(),
+                    "gcp" => _serviceProvider.GetRequiredService<GcpDeploymentProvider>(),
+                    "oracle" => _serviceProvider.GetRequiredService<OracleDeploymentProvider>(),
+                    "mulesoft" => _serviceProvider.GetRequiredService<MuleSoftDeploymentProvider>(),
+                    "ibmwebsphere" => _serviceProvider.GetRequiredService<IbmWebSphereDeploymentProvider>(),
+                    "ibmdatapower" => _serviceProvider.GetRequiredService<IbmDataPowerDeploymentProvider>(),
+                    "ibmapiconnect" => _serviceProvider.GetRequiredService<IbmApiConnectDeploymentProvider>(),
+                    "apachecamel" => _serviceProvider.GetRequiredService<ApacheCamelDeploymentProvider>(),
+                    "redhatfuse" => _serviceProvider.GetRequiredService<RedHatFuseDeploymentProvider>(),
+                    "tibcobusinessworks" => _serviceProvider.GetRequiredService<TibcoBusinessWorksDeploymentProvider>(),
+                    "local" => _serviceProvider.GetRequiredService<LocalDeploymentProvider>(),
+                    _ => throw new InvalidOperationException($"Internal error: No provider registered for '{providerKey}'.")
+                };
+            }
+            catch (Exception ex)
+            {
+                throw new AssemblerException(AssemblerExitCode.UnhandledException, $"Failed to create cloud deployment provider for '{cloudProviderName}'. Check application startup configuration.", ex);
+            }
         }
     }
 
@@ -124,7 +187,7 @@ namespace x3squaredcircles.API.Assembler.Services
             _logger = logger;
         }
 
-        protected async Task ExecuteCommandLineProcessAsync(string command, string args, string workingDirectory = "")
+        protected async Task<(bool Success, string Output, string Error)> ExecuteCommandLineProcessAsync(string command, string args, string workingDirectory = "")
         {
             var process = new Process
             {
@@ -140,11 +203,14 @@ namespace x3squaredcircles.API.Assembler.Services
                 }
             };
 
-            var output = new StringBuilder();
-            var error = new StringBuilder();
+            var outputBuilder = new StringBuilder();
+            var errorBuilder = new StringBuilder();
+            var processExitCompletionSource = new TaskCompletionSource<int>();
+            process.Exited += (_, _) => processExitCompletionSource.SetResult(process.ExitCode);
+            process.EnableRaisingEvents = true;
 
-            process.OutputDataReceived += (sender, e) => { if (e.Data != null) output.AppendLine(e.Data); };
-            process.ErrorDataReceived += (sender, e) => { if (e.Data != null) error.AppendLine(e.Data); };
+            process.OutputDataReceived += (sender, e) => { if (e.Data != null) outputBuilder.AppendLine(e.Data); };
+            process.ErrorDataReceived += (sender, e) => { if (e.Data != null) errorBuilder.AppendLine(e.Data); };
 
             _logger.LogInformation("Executing command: {Command} {Args}", command, args);
 
@@ -152,170 +218,23 @@ namespace x3squaredcircles.API.Assembler.Services
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
             await process.WaitForExitAsync();
+            var exitCode = await processExitCompletionSource.Task;
 
-            if (process.ExitCode != 0)
+            var output = outputBuilder.ToString();
+            var error = errorBuilder.ToString();
+
+            if (exitCode != 0)
             {
-                _logger.LogError("Deployment command failed with exit code {ExitCode}. Error: {Error}", process.ExitCode, error.ToString());
-                throw new AssemblerException(AssemblerExitCode.DeploymentFailure, $"External command failed: {error}");
+                _logger.LogError("Command failed with exit code {ExitCode}.\nOutput:\n{Output}\nError:\n{Error}", exitCode, output, error);
+            }
+            else
+            {
+                _logger.LogInformation("Command executed successfully. Output:\n{Output}", output);
             }
 
-            _logger.LogInformation("Deployment command executed successfully. Output: {Output}", output.ToString());
+            return (exitCode == 0, output, error);
         }
-    }
-
-    public class AzureDeploymentProvider : BaseDeploymentProvider, ICloudDeploymentProvider
-    {
-        public AzureDeploymentProvider(ILogger<AzureDeploymentProvider> logger) : base(logger) { }
-
-        public bool VerifyArtifact(string pattern, string artifactPath)
-        {
-            return pattern switch
-            {
-                "functions" => Directory.GetFiles(artifactPath, "host.json").Any() && Directory.GetFiles(artifactPath, "*.dll").Any(),
-                "appservice" or "aspnetcore" or "webapi" => Directory.GetFiles(artifactPath, "*.dll").Any() && Directory.GetFiles(artifactPath, "web.config").Any(),
-                "staticwebapps" => Directory.GetFiles(artifactPath, "index.html").Any(),
-                _ => throw new AssemblerException(AssemblerExitCode.InvalidConfiguration, $"Azure deployment pattern '{pattern}' is not supported for verification."),
-            };
-        }
-
-        public async Task DeployAsync(JsonElement deployable, string artifactPath)
-        {
-            // A real implementation would parse resource group, app name, etc. from a manifest
-            var resourceGroup = "my-resource-group";
-            var appName = $"app-{deployable.GetProperty("groupName").GetString().ToLower()}";
-            var pattern = deployable.GetProperty("pattern").GetString()?.ToLowerInvariant();
-
-            var (command, args) = pattern switch
-            {
-                "functions" => ("az", $"functionapp deployment source config-zip -g {resourceGroup} -n {appName} --src \"{artifactPath}\""),
-                "appservice" or "aspnetcore" or "webapi" => ("az", $"webapp deployment source config-zip -g {resourceGroup} -n {appName} --src \"{artifactPath}\""),
-                _ => throw new AssemblerException(AssemblerExitCode.InvalidConfiguration, $"Azure deployment pattern '{pattern}' is not supported."),
-            };
-
-            await ExecuteCommandLineProcessAsync(command, args);
-        }
-    }
-
-    public class AwsDeploymentProvider : BaseDeploymentProvider, ICloudDeploymentProvider
-    {
-        public AwsDeploymentProvider(ILogger<AwsDeploymentProvider> logger) : base(logger) { }
-        public bool VerifyArtifact(string pattern, string artifactPath) => true; // Placeholder
-        public async Task DeployAsync(JsonElement deployable, string artifactPath)
-        {
-            _logger.LogWarning("AWS Deployment provider is not fully implemented.");
-            await Task.CompletedTask;
-        }
-    }
-
-    public class GcpDeploymentProvider : BaseDeploymentProvider, ICloudDeploymentProvider
-    {
-        public GcpDeploymentProvider(ILogger<GcpDeploymentProvider> logger) : base(logger) { }
-        public bool VerifyArtifact(string pattern, string artifactPath) => true; // Placeholder
-        public async Task DeployAsync(JsonElement deployable, string artifactPath)
-        {
-            _logger.LogWarning("GCP Deployment provider is not fully implemented.");
-            await Task.CompletedTask;
-        }
-    }
-
-    public class OracleDeploymentProvider : BaseDeploymentProvider, ICloudDeploymentProvider
-    {
-        public OracleDeploymentProvider(ILogger<OracleDeploymentProvider> logger) : base(logger) { }
-        public bool VerifyArtifact(string pattern, string artifactPath) => true; // Placeholder
-        public async Task DeployAsync(JsonElement deployable, string artifactPath)
-        {
-            _logger.LogWarning("Oracle Deployment provider is not fully implemented.");
-            await Task.CompletedTask;
-        }
-    }
-
-    public class MuleSoftDeploymentProvider : BaseDeploymentProvider, ICloudDeploymentProvider
-    {
-        public MuleSoftDeploymentProvider(ILogger<MuleSoftDeploymentProvider> logger) : base(logger) { }
-        public bool VerifyArtifact(string pattern, string artifactPath) => true; // Placeholder
-        public async Task DeployAsync(JsonElement deployable, string artifactPath)
-        {
-            _logger.LogWarning("MuleSoft Deployment provider is not fully implemented.");
-            await Task.CompletedTask;
-        }
-    }
-
-    public class IbmWebSphereDeploymentProvider : BaseDeploymentProvider, ICloudDeploymentProvider
-    {
-        public IbmWebSphereDeploymentProvider(ILogger<IbmWebSphereDeploymentProvider> logger) : base(logger) { }
-        public bool VerifyArtifact(string pattern, string artifactPath) => true; // Placeholder
-        public async Task DeployAsync(JsonElement deployable, string artifactPath)
-        {
-            _logger.LogWarning("IBM WebSphere Deployment provider is not fully implemented.");
-            await Task.CompletedTask;
-        }
-    }
-
-    public class IbmDataPowerDeploymentProvider : BaseDeploymentProvider, ICloudDeploymentProvider
-    {
-        public IbmDataPowerDeploymentProvider(ILogger<IbmDataPowerDeploymentProvider> logger) : base(logger) { }
-        public bool VerifyArtifact(string pattern, string artifactPath) => true; // Placeholder
-        public async Task DeployAsync(JsonElement deployable, string artifactPath)
-        {
-            _logger.LogWarning("IBM DataPower Deployment provider is not fully implemented.");
-            await Task.CompletedTask;
-        }
-    }
-
-    public class IbmApiConnectDeploymentProvider : BaseDeploymentProvider, ICloudDeploymentProvider
-    {
-        public IbmApiConnectDeploymentProvider(ILogger<IbmApiConnectDeploymentProvider> logger) : base(logger) { }
-        public bool VerifyArtifact(string pattern, string artifactPath) => true; // Placeholder
-        public async Task DeployAsync(JsonElement deployable, string artifactPath)
-        {
-            _logger.LogWarning("IBM API Connect Deployment provider is not fully implemented.");
-            await Task.CompletedTask;
-        }
-    }
-
-    public class ApacheCamelDeploymentProvider : BaseDeploymentProvider, ICloudDeploymentProvider
-    {
-        public ApacheCamelDeploymentProvider(ILogger<ApacheCamelDeploymentProvider> logger) : base(logger) { }
-        public bool VerifyArtifact(string pattern, string artifactPath) => true; // Placeholder
-        public async Task DeployAsync(JsonElement deployable, string artifactPath)
-        {
-            _logger.LogWarning("Apache Camel Deployment provider is not fully implemented.");
-            await Task.CompletedTask;
-        }
-    }
-
-    public class RedHatFuseDeploymentProvider : BaseDeploymentProvider, ICloudDeploymentProvider
-    {
-        public RedHatFuseDeploymentProvider(ILogger<RedHatFuseDeploymentProvider> logger) : base(logger) { }
-        public bool VerifyArtifact(string pattern, string artifactPath) => true; // Placeholder
-        public async Task DeployAsync(JsonElement deployable, string artifactPath)
-        {
-            _logger.LogWarning("Red Hat Fuse Deployment provider is not fully implemented.");
-            await Task.CompletedTask;
-        }
-    }
-
-    public class TibcoBusinessWorksDeploymentProvider : BaseDeploymentProvider, ICloudDeploymentProvider
-    {
-        public TibcoBusinessWorksDeploymentProvider(ILogger<TibcoBusinessWorksDeploymentProvider> logger) : base(logger) { }
-        public bool VerifyArtifact(string pattern, string artifactPath) => true; // Placeholder
-        public async Task DeployAsync(JsonElement deployable, string artifactPath)
-        {
-            _logger.LogWarning("TIBCO BusinessWorks Deployment provider is not fully implemented.");
-            await Task.CompletedTask;
-        }
-    }
-
-    public class LocalDeploymentProvider : BaseDeploymentProvider, ICloudDeploymentProvider
-    {
-        public LocalDeploymentProvider(ILogger<LocalDeploymentProvider> logger) : base(logger) { }
-        public bool VerifyArtifact(string pattern, string artifactPath) => true; // Placeholder
-        public async Task DeployAsync(JsonElement deployable, string artifactPath)
-        {
-            _logger.LogInformation("Local deployment pattern does not execute a cloud deployment. Artifact is ready at: {Path}", artifactPath);
-            await Task.CompletedTask;
-        }
-    }
+    }   
 
     #endregion
 }

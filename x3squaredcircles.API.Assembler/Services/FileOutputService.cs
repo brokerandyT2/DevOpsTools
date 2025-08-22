@@ -5,7 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using x3squaredcircles.API.Assembler.Models;
@@ -14,9 +13,10 @@ namespace x3squaredcircles.API.Assembler.Services
 {
     public interface IFileOutputService
     {
-        Task WriteGenerationReceiptAsync(string managedWorkspacePath, JsonDocument manifest, JsonDocument discoveredApis, IEnumerable<GeneratedProject> generatedProjects);
+        Task WriteGenerationReceiptAsync(string managedWorkspacePath, JsonDocument manifest, JsonDocument discoveredApis, IEnumerable<GeneratedProject>? generatedProjects);
         Task<GenerationReceipt> ReadGenerationReceiptAsync(string managedWorkspacePath);
         Task WriteDeploymentReceiptAsync(string managedWorkspacePath, string groupName, string artifactPath);
+        Task WriteBuildReceiptAsync(string managedWorkspacePath, string builtProjectPath, BuildResult buildResult);
     }
 
     public class FileOutputService : IFileOutputService
@@ -24,33 +24,64 @@ namespace x3squaredcircles.API.Assembler.Services
         private const string GenerationReceiptFileName = "generation-receipt.json";
 
         private readonly ILogger<FileOutputService> _logger;
+        private readonly JsonSerializerOptions _jsonOptions = new()
+        {
+            WriteIndented = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        };
+        public async Task WriteBuildReceiptAsync(string managedWorkspacePath, string builtProjectPath, BuildResult buildResult)
+        {
+            var projectName = Path.GetFileName(builtProjectPath);
+            var receiptFileName = $"build-receipt.{projectName}.json";
+            var receiptPath = Path.Combine(managedWorkspacePath, receiptFileName);
+            _logger.LogInformation("Creating build receipt for project '{Project}' at: {Path}", projectName, receiptPath);
 
+            try
+            {
+                var receipt = new
+                {
+                    generationId = Path.GetFileName(managedWorkspacePath),
+                    buildTimestamp = DateTime.UtcNow,
+                    builtProject = projectName,
+                    buildSuccess = buildResult.Success,
+                    artifactPath = buildResult.ArtifactPath,
+                    artifactSha256 = await ComputeFileHashAsync(buildResult.ArtifactPath),
+                    buildLog = buildResult.LogOutput
+                };
+
+                await using var fileStream = File.Create(receiptPath);
+                await JsonSerializer.SerializeAsync(fileStream, receipt, _jsonOptions);
+                _logger.LogInformation("✓ Successfully wrote build receipt for project '{Project}'.", projectName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to write build receipt file for project '{Project}'.", projectName);
+            }
+        }
         public FileOutputService(ILogger<FileOutputService> logger)
         {
             _logger = logger;
         }
 
-        public async Task WriteGenerationReceiptAsync(string managedWorkspacePath, JsonDocument manifest, JsonDocument discoveredApis, IEnumerable<GeneratedProject> generatedProjects)
+        public async Task WriteGenerationReceiptAsync(string managedWorkspacePath, JsonDocument manifest, JsonDocument discoveredApis, IEnumerable<GeneratedProject>? generatedProjects)
         {
             var receiptPath = Path.Combine(managedWorkspacePath, GenerationReceiptFileName);
             _logger.LogInformation("Creating final generation receipt at: {Path}", receiptPath);
 
             try
             {
-                var receipt = new GenerationReceipt
-                {
-                    GenerationId = Path.GetFileName(managedWorkspacePath),
-                    Timestamp = DateTime.UtcNow,
-                    ToolVersion = Assembly.GetExecutingAssembly().GetName().Version?.ToString(),
-                    Manifest = manifest.RootElement.Clone(),
-                    DiscoveredApis = discoveredApis.RootElement.Clone(),
-                    GeneratedProjects = generatedProjects?.ToList()
-                };
+                var receipt = new GenerationReceipt(
+                    GenerationId: Path.GetFileName(managedWorkspacePath),
+                    Timestamp: DateTime.UtcNow,
+                    ToolVersion: Assembly.GetExecutingAssembly().GetName().Version?.ToString(),
+                    Manifest: manifest.RootElement.Clone(),
+                    DiscoveredApis: discoveredApis.RootElement.Clone(),
+                    GeneratedProjects: generatedProjects?.ToList() ?? new List<GeneratedProject>()
+                );
 
-                var jsonOptions = new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
-                var jsonContent = JsonSerializer.Serialize(receipt, jsonOptions);
+                await using var fileStream = File.Create(receiptPath);
+                await JsonSerializer.SerializeAsync(fileStream, receipt, _jsonOptions);
 
-                await File.WriteAllTextAsync(receiptPath, jsonContent);
                 _logger.LogInformation("✓ Successfully wrote generation receipt.");
             }
             catch (Exception ex)
@@ -72,17 +103,20 @@ namespace x3squaredcircles.API.Assembler.Services
 
             try
             {
-                var jsonContent = await File.ReadAllTextAsync(receiptPath);
-                var receipt = JsonSerializer.Deserialize<GenerationReceipt>(jsonContent, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                await using var fileStream = File.OpenRead(receiptPath);
+                var receipt = await JsonSerializer.DeserializeAsync<GenerationReceipt>(fileStream, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
                 if (receipt == null)
                 {
-                    throw new AssemblerException(AssemblerExitCode.DeploymentFailure, "Failed to deserialize the generation receipt.");
+                    throw new AssemblerException(AssemblerExitCode.DeploymentFailure, "Failed to deserialize the generation receipt (result was null).");
                 }
+
+                _logger.LogInformation("✓ Successfully read and validated generation receipt.");
                 return receipt;
             }
             catch (JsonException ex)
             {
-                throw new AssemblerException(AssemblerExitCode.DeploymentFailure, $"Error reading generation receipt: {ex.Message}", ex);
+                throw new AssemblerException(AssemblerExitCode.DeploymentFailure, $"Error reading generation receipt: {ex.Message}. The file may be corrupt.", ex);
             }
         }
 
@@ -104,19 +138,26 @@ namespace x3squaredcircles.API.Assembler.Services
                     deployedArtifactSha256 = artifactHash
                 };
 
-                var jsonOptions = new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
-                var jsonContent = JsonSerializer.Serialize(receipt, jsonOptions);
-                await File.WriteAllTextAsync(receiptPath, jsonContent);
+                await using var fileStream = File.Create(receiptPath);
+                await JsonSerializer.SerializeAsync(fileStream, receipt, _jsonOptions);
+
                 _logger.LogInformation("✓ Successfully wrote deployment receipt for group '{Group}'.", groupName);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to write deployment receipt file for group '{Group}'.", groupName);
+                // This is a non-critical operation. A failure to write this receipt should not fail the pipeline.
+                _logger.LogError(ex, "Failed to write deployment receipt file for group '{Group}'. This will not fail the deployment.", groupName);
             }
         }
 
         private async Task<string> ComputeFileHashAsync(string filePath)
         {
+            if (!File.Exists(filePath))
+            {
+                _logger.LogWarning("Cannot compute hash. Artifact file not found at: {FilePath}", filePath);
+                return "file-not-found";
+            }
+
             try
             {
                 using var sha256 = SHA256.Create();
@@ -132,31 +173,35 @@ namespace x3squaredcircles.API.Assembler.Services
         }
     }
 
-    public class GenerationReceipt
+    /// <summary>
+    /// Represents the complete, auditable record of a 'generate' command execution.
+    /// Using a record for immutability and value-based equality.
+    /// </summary>
+    public record GenerationReceipt(
+        string GenerationId,
+        DateTime Timestamp,
+        string? ToolVersion,
+        JsonElement Manifest,
+        JsonElement DiscoveredApis,
+        List<GeneratedProject> GeneratedProjects)
     {
-        public string GenerationId { get; set; }
-        public DateTime Timestamp { get; set; }
-        public string ToolVersion { get; set; }
-        public JsonElement Manifest { get; set; }
-        public JsonElement DiscoveredApis { get; set; }
-        public List<GeneratedProject> GeneratedProjects { get; set; }
-
-        public JsonElement GetDeployable(string groupName)
+        public JsonElement GetDeploymentGroup(string groupName)
         {
-            if (Manifest.TryGetProperty("groups", out var groups))
+            if (Manifest.TryGetProperty("groups", out var groups) &&
+                groups.TryGetProperty(groupName, out var groupConfig) &&
+                groupConfig.TryGetProperty("cloud", out var cloudElement) &&
+                groupConfig.TryGetProperty("pattern", out var patternElement))
             {
-                if (groups.TryGetProperty(groupName, out var groupConfig))
+                var deployable = new
                 {
-                    var deployable = new
-                    {
-                        groupName = groupName,
-                        cloud = groupConfig.GetProperty("cloud").GetString(),
-                        pattern = groupConfig.GetProperty("pattern").GetString()
-                    };
-                    return JsonDocument.Parse(JsonSerializer.Serialize(deployable)).RootElement;
-                }
+                    groupName,
+                    cloud = cloudElement.GetString(),
+                    pattern = patternElement.GetString()
+                };
+                return JsonDocument.Parse(JsonSerializer.Serialize(deployable)).RootElement;
             }
-            throw new AssemblerException(AssemblerExitCode.InvalidConfiguration, $"Group '{groupName}' not found in the generation receipt manifest.");
+
+            throw new AssemblerException(AssemblerExitCode.InvalidConfiguration, $"Group '{groupName}' or its required 'cloud'/'pattern' properties not found in the generation receipt manifest.");
         }
     }
 }

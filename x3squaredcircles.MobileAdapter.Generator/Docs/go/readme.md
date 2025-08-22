@@ -1,149 +1,80 @@
-﻿# Using the Mobile Adapter Generator with Go
+﻿# Mobile Adapter Generator: Go Guide
 
-This document provides a comprehensive guide for generating native mobile data models from a Go codebase.
+This guide provides instructions for using the Mobile Adapter Generator with a Go codebase. The discovery mechanism for Go is **source code analysis**, where the tool inspects your `.go` files for special comment directives.
 
-## 1. Core Concept: Source File Analysis
+## 1. Understand the Comment Directive
 
-The generator works with Go by parsing `.go` source files directly. It does not require a compiled binary. It searches for `struct` definitions and analyzes their fields and types to create the mobile models.
+The generator identifies which structs to process by looking for a specific comment directive immediately preceding the `type` definition. There is **no code to create or import**. You simply add a formatted comment.
 
-## 2. How to Mark Structs for Discovery
+The required format is `// @<TrackAttribute> [parameters]`.
 
-Discovery in Go is driven by a special comment placed directly above a `struct` definition. This approach avoids adding non-standard dependencies to your Go project.
+The `@` symbol is critical. The name you use for the track attribute must match the `ADAPTERGEN_TRACK_ATTRIBUTE` environment variable.
 
-#### Step 1: Add the Tracking Comment
-Place a comment in the format `// @YourTrackAttribute` on the line immediately preceding the `type` definition of your struct. The `TrackAttribute` is a simple marker that you define.
+## 2. Apply the Directive to Your Structs
+
+Add the comment directive directly above any `struct` you want the generator to process. The generator will analyze the exported fields of the struct.
+
+### Example without Placeholders:
+
+This will generate a mobile model named `UserProfile`.
 
 ```go
 package models
 
-import (
-    "time"
-    "github.com/google/uuid"
-)
+import "github.com/google/uuid"
 
-// @ExportToMobile
-type PhotoMetadata struct {
-    ID          uuid.UUID         `json:"id"`
-    Title       string            `json:"title"`
-    Description string            `json:"description,omitempty"`
-    CaptureDate time.Time         `json:"captureDate"`
-    IsPublic    bool              `json:"isPublic"`
-    Views       int64             `json:"views"`
-    Rating      float64           `json:"rating"`
-    Tags        []string          `json:"tags"`
-    Camera      *CameraSettings   `json:"camera"` // Pointer for optional nested struct
+// @TrackableDTO
+type UserProfile struct {
+	UserID   uuid.UUID `json:"userId"`
+	FullName string    `json:"fullName"`
+	IsActive bool      `json:"isActive"`
 }
+```
 
-// @ExportToMobile
-type CameraSettings struct {
-    Make        string  `json:"make"`
-    Model       string  `json:"model"`
-    FocalLength int     `json:"focalLength"`
-    ISO         int     `json:"iso"`
+### Example with Placeholder Resolution:
+
+This allows the CI/CD pipeline to control the name of the generated model using a `targetName` parameter.
+
+```go
+package models
+
+import "github.com/google/uuid"
+
+// @TrackableDTO targetName="{userModelName}"
+type User struct {
+	ID    uuid.UUID `json:"id"`
+	Email string    `json:"email"`
 }
-Note: The generator primarily analyzes the Go type information. The json struct tags are used by Go's native JSON marshaler and are a good practice to include, but they do not drive the discovery process.
-3. Configuration
-You must configure the generator using environment variables in your CI/CD pipeline.
-Crucial Go Variables:
-LANGUAGE_GO: Must be set to true.
-TRACK_ATTRIBUTE: The marker used in your tracking comments (e.g., ExportToMobile).
-SOURCE_PATHS: A semicolon-separated list of paths inside the container where your .go source files are located.
-Example Configuration for Android (Kotlin) Generation
-code
-Bash
-# 1. Language and Platform
-LANGUAGE_GO=true
-PLATFORM_ANDROID=true
+```
 
-# 2. Discovery Method
-# Find all structs with the "// @ExportToMobile" comment
-TRACK_ATTRIBUTE=ExportToMobile
+## 3. Configure the Generator
 
-# 3. Source Path (CRITICAL)
-# Path to the directory containing your Go models
-SOURCE_PATHS=/src/pkg/models
+In your CI/CD pipeline, you will configure the generator to find your source code and process the structs with comment directives.
 
-# 4. Core Config
-REPO_URL="https://github.com/my-org/my-repo"
-BRANCH="main"
-LICENSE_SERVER="https://license.my-company.com"
+### Environment Variables for Go:
 
-# 5. Output Config
-OUTPUT_DIR=/src/generated-mobile-models
-ANDROID_OUTPUT_DIR=./android
-ANDROID_PACKAGE_NAME="com.mycompany.app.models"
-Example Configuration for iOS (Swift) Generation
-Note the change in PLATFORM_* and output variables.
-code
-Bash
-# 1. Language and Platform
-LANGUAGE_GO=true
-PLATFORM_IOS=true
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `ADAPTERGEN_LANGUAGE_GO` | **Required.** Tells the generator to use the Go discovery engine. | `true` |
+| `ADAPTERGEN_TRACK_ATTRIBUTE` | **Required.** The name of the comment directive to look for. | `TrackableDTO` |
+| `ADAPTERGEN_SOURCE_PATHS` | **Required.** Path inside the container to the directory containing your `.go` source files. | `/src/my-api-service/models` |
+| `ADAPTERGEN_CUSTOM_USERMODELNAME` | **(If using placeholders).** The value for the `{userModelName}` placeholder. | `CustomerProfileV2` |
 
-# 2. Discovery Method
-TRACK_ATTRIBUTE=ExportToMobile
+### Example `docker run` command:
 
-# 3. Source Path (CRITICAL)
-SOURCE_PATHS=/src/pkg/models
+This command runs the generator, targeting an iOS/Swift output. It assumes your repository is mounted at `/src`.
 
-# 4. Core Config
-REPO_URL="https://github.com/my-org/my-repo"
-BRANCH="main"
-LICENSE_SERVER="https://license.my-company.com"
+```bash
+docker run --rm \
+  -v $(pwd):/src \
+  -e ADAPTERGEN_LANGUAGE_GO=true \
+  -e ADAPTERGEN_PLATFORM_IOS=true \
+  -e ADAPTERGEN_TRACK_ATTRIBUTE="TrackableDTO" \
+  -e ADAPTERGEN_SOURCE_PATHS="/src/my-api-service/models" \
+  -e ADAPTERGEN_IOS_MODULE_NAME="MyApiModels" \
+  -e ADAPTERGEN_CUSTOM_USERMODELNAME="CustomerProfileV2" \
+  -e "3SC_LICENSE_SERVER=https://licensing.3sc.com" \
+  3sc/mobile-adapter-generator:latest
+```
 
-# 5. Output Config
-OUTPUT_DIR=/src/generated-mobile-models
-IOS_OUTPUT_DIR=./ios
-IOS_MODULE_NAME="SharedModels"
-4. Expected Output
-Based on the Go examples above, the generator will produce the following files.
-Generated Kotlin (PhotoMetadata.kt)
-code
-Kotlin
-package com.mycompany.app.models
-
-import java.time.LocalDateTime
-import java.util.UUID
-
-data class PhotoMetadata(
-    val id: UUID,
-    val title: String,
-    val description: String?,
-    val captureDate: LocalDateTime,
-    val isPublic: Boolean,
-    val views: Long,
-    val rating: Double,
-    val tags: List<String>,
-    val camera: CameraSettings?
-)
-Generated Swift (CameraSettings.swift)
-code
-Swift
-// Generated by 3SC Mobile Adapter Generator
-import Foundation
-
-struct CameraSettings: Codable {
-    let make: String
-    let model: String
-    let focalLength: Int32
-    let iso: Int32
-}
-5. Type Mapping Reference
-The following table shows how common Go types are mapped to their Kotlin and Swift equivalents.
-Go Type	Kotlin Type	Swift Type
-string	String	String
-int, int32	Int	Int32
-int64	Long	Int64
-bool	Boolean	Bool
-float64	Double	Double
-float32	Float	Float
-time.Time	LocalDateTime	Date
-uuid.UUID	UUID	UUID
-[]byte	ByteArray	Data
-[]string	List<String>	[String]
-*MyStruct	MyStruct?	MyStruct?
-6. Troubleshooting
-Error: No classes found.
-Is the comment format correct? Ensure the tracking comment is exactly // @YourTrackAttribute on its own line directly above the type ... struct line.
-Is SOURCE_PATHS correct? The path must point to the directory containing your .go files inside the container's /src volume mount.
-Does the attribute name match? The string in TRACK_ATTRIBUTE must exactly match the text used in your comment marker.
+When this command runs against the placeholder example above, it will generate a Swift struct named `CustomerProfileV2.swift`.

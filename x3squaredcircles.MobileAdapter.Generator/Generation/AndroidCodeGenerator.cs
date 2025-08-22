@@ -44,8 +44,9 @@ namespace x3squaredcircles.MobileAdapter.Generator.Generation
             {
                 try
                 {
-                    var fileContent = GenerateKotlinClass(cls, typeMappings, packageName, config);
-                    var filePath = Path.Combine(outputDir, $"{cls.Name}.kt");
+                    var className = GetTargetClassName(cls);
+                    var fileContent = GenerateKotlinClass(cls, className, typeMappings, packageName, config);
+                    var filePath = Path.Combine(outputDir, $"{className}.kt");
                     await File.WriteAllTextAsync(filePath, fileContent);
                     generatedFiles.Add(filePath);
                     _logger.LogInformation("✓ Generated Android adapter: {FilePath}", filePath);
@@ -59,8 +60,19 @@ namespace x3squaredcircles.MobileAdapter.Generator.Generation
             return generatedFiles;
         }
 
+        private string GetTargetClassName(DiscoveredClass cls)
+        {
+            if (cls.Metadata.TryGetValue("TargetName", out var targetName) && targetName is string name && !string.IsNullOrWhiteSpace(name))
+            {
+                _logger.LogDebug("Class '{OriginalName}' is being renamed to '{TargetName}' based on DSL metadata.", cls.Name, name);
+                return name;
+            }
+            return cls.Name;
+        }
+
         private string GenerateKotlinClass(
             DiscoveredClass cls,
+            string targetClassName,
             Dictionary<string, TypeMappingInfo> typeMappings,
             string packageName,
             GeneratorConfiguration config)
@@ -79,7 +91,7 @@ namespace x3squaredcircles.MobileAdapter.Generator.Generation
             if (imports.Any()) sb.AppendLine();
 
             // Class definition
-            sb.AppendLine($"data class {cls.Name}(");
+            sb.AppendLine($"data class {targetClassName}(");
 
             // Properties
             var propertyStrings = new List<string>();

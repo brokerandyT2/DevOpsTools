@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using x3squaredcircles.MobileAdapter.Generator.Configuration;
 using x3squaredcircles.MobileAdapter.Generator.Models;
+using x3squaredcircles.MobileAdapter.Generator.Services;
 
 namespace x3squaredcircles.MobileAdapter.Generator.Discovery
 {
@@ -16,10 +17,12 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
     public class TypeScriptDiscoveryEngine : IClassDiscoveryEngine
     {
         private readonly ILogger<TypeScriptDiscoveryEngine> _logger;
+        private readonly IPlaceholderResolverService _placeholderResolverService;
 
-        public TypeScriptDiscoveryEngine(ILogger<TypeScriptDiscoveryEngine> logger)
+        public TypeScriptDiscoveryEngine(ILogger<TypeScriptDiscoveryEngine> logger, IPlaceholderResolverService placeholderResolverService)
         {
             _logger = logger;
+            _placeholderResolverService = placeholderResolverService;
         }
 
         public async Task<List<DiscoveredClass>> DiscoverClassesAsync(GeneratorConfiguration config)
@@ -64,10 +67,10 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
             var content = await File.ReadAllTextAsync(filePath);
             var cleanContent = RemoveComments(content);
 
-            // Regex to find exported classes annotated with the tracking decorator.
+            // Regex to find exported classes annotated with the tracking decorator, capturing decorator parameters.
             var trackAttribute = config.TrackAttribute;
             var classRegex = new Regex(
-                 $@"@{trackAttribute}(?:\(.*\))?\s*export\s+class\s+(?<className>\w+)\s*(?:extends\s+[\w\.<>]+)?\s*(?:implements\s+[\w,\s<>]+)?\s*\{{(?<body>(?:[^{{}}]|{{(?<DEPTH>)|}} (?<-DEPTH>))*(?(DEPTH)(?!)))\}}",
+                 $@"@{trackAttribute}\s*(?:\((?<decoratorParams>[^)]*)\))?\s*export\s+class\s+(?<className>\w+)\s*(?:extends\s+[\w\.<>]+)?\s*(?:implements\s+[\w,\s<>]+)?\s*\{{(?<body>(?:[^{{}}]|{{(?<DEPTH>)|}} (?<-DEPTH>))*(?(DEPTH)(?!)))\}}",
                 RegexOptions.Singleline | RegexOptions.ExplicitCapture);
 
             var matches = classRegex.Matches(cleanContent);
@@ -75,20 +78,59 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
             {
                 var className = match.Groups["className"].Value;
                 var classBody = match.Groups["body"].Value;
+                var decoratorParams = match.Groups["decoratorParams"].Success ? match.Groups["decoratorParams"].Value : string.Empty;
 
                 _logger.LogDebug("Found tracked TypeScript class '{ClassName}' in file {File}", className, filePath);
 
-                classes.Add(new DiscoveredClass
+                var discoveredClass = new DiscoveredClass
                 {
                     Name = className,
                     Namespace = ExtractNamespace(cleanContent) ?? Path.GetFileNameWithoutExtension(filePath),
                     Properties = ExtractProperties(classBody),
                     Methods = ExtractMethods(classBody)
-                });
+                };
+
+                var metadata = ExtractMetadataFromDecorator(decoratorParams);
+                foreach (var item in metadata)
+                {
+                    var resolvedValue = _placeholderResolverService.ResolvePlaceholders(item.Value);
+                    discoveredClass.Metadata[item.Key] = resolvedValue;
+                }
+
+                classes.Add(discoveredClass);
             }
 
             return classes;
         }
+
+        private Dictionary<string, string> ExtractMetadataFromDecorator(string paramsString)
+        {
+            var metadata = new Dictionary<string, string>();
+            if (string.IsNullOrWhiteSpace(paramsString))
+            {
+                return metadata;
+            }
+
+            // Regex to find key-value pairs where the value is a string literal.
+            // e.g., targetName: 'value', someProp: "{placeholder}"
+            var keyValueRegex = new Regex(@"\b(?<key>\w+)\s*:\s*(['""`])(?<value>.*?)\1", RegexOptions.Compiled);
+            var matches = keyValueRegex.Matches(paramsString);
+
+            foreach (Match match in matches)
+            {
+                var key = match.Groups["key"].Value;
+                var value = match.Groups["value"].Value;
+
+                // Capitalize first letter to standardize metadata keys
+                var metadataKey = char.ToUpperInvariant(key[0]) + key.Substring(1);
+
+                metadata[metadataKey] = value;
+                _logger.LogTrace("Extracted metadata from decorator: {Key} = '{Value}'", metadataKey, value);
+            }
+
+            return metadata;
+        }
+
 
         private string ExtractNamespace(string content)
         {

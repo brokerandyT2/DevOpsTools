@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using x3squaredcircles.MobileAdapter.Generator.Configuration;
 using x3squaredcircles.MobileAdapter.Generator.Models;
+using x3squaredcircles.MobileAdapter.Generator.Services;
 
 namespace x3squaredcircles.MobileAdapter.Generator.Discovery
 {
@@ -16,10 +17,12 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
     public class KotlinDiscoveryEngine : IClassDiscoveryEngine
     {
         private readonly ILogger<KotlinDiscoveryEngine> _logger;
+        private readonly IPlaceholderResolverService _placeholderResolverService;
 
-        public KotlinDiscoveryEngine(ILogger<KotlinDiscoveryEngine> logger)
+        public KotlinDiscoveryEngine(ILogger<KotlinDiscoveryEngine> logger, IPlaceholderResolverService placeholderResolverService)
         {
             _logger = logger;
+            _placeholderResolverService = placeholderResolverService;
         }
 
         public async Task<List<DiscoveredClass>> DiscoverClassesAsync(GeneratorConfiguration config)
@@ -64,7 +67,7 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
             // Regex to find classes (including data classes) annotated with the tracking attribute.
             var trackAttribute = config.TrackAttribute;
             var classRegex = new Regex(
-                $@"@{trackAttribute}(?:\(.*\))?\s*(?:public|internal|private)?\s*(?:data\s+)?class\s+(?<className>\w+)\s*(?:\((?<primaryCtorParams>[^)]*)\))?(?:\s*:\s*\w+\s*\([^)]*\))?\s*(?:\{{(?<body>(?:[^{{}}]|{{(?<DEPTH>)|}} (?<-DEPTH>))*(?(DEPTH)(?!)))\}})?",
+                $@"@{trackAttribute}\s*(?:\((?<annotationParams>[^)]*)\))?\s*(?:public|internal|private)?\s*(?:data\s+)?class\s+(?<className>\w+)\s*(?:\((?<primaryCtorParams>[^)]*)\))?(?:\s*:\s*\w+\s*\([^)]*\))?\s*(?:\{{(?<body>(?:[^{{}}]|{{(?<DEPTH>)|}} (?<-DEPTH>))*(?(DEPTH)(?!)))\}})?",
                 RegexOptions.Singleline | RegexOptions.ExplicitCapture);
 
             var matches = classRegex.Matches(cleanContent);
@@ -76,23 +79,58 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
                     var className = match.Groups["className"].Value;
                     var primaryCtorParams = match.Groups["primaryCtorParams"].Value;
                     var classBody = match.Groups["body"].Success ? match.Groups["body"].Value : string.Empty;
+                    var annotationParams = match.Groups["annotationParams"].Success ? match.Groups["annotationParams"].Value : string.Empty;
 
                     _logger.LogDebug("Found tracked Kotlin class '{ClassName}' in file {File}", className, filePath);
 
                     var properties = ExtractPropertiesFromPrimaryCtor(primaryCtorParams);
                     properties.AddRange(ExtractPropertiesFromBody(classBody));
 
-                    classes.Add(new DiscoveredClass
+                    var discoveredClass = new DiscoveredClass
                     {
                         Name = className,
                         Namespace = packageName,
                         Properties = properties,
                         Methods = ExtractMethods(classBody)
-                    });
+                    };
+
+                    var metadata = ExtractMetadataFromAnnotation(annotationParams);
+                    foreach (var item in metadata)
+                    {
+                        var resolvedValue = _placeholderResolverService.ResolvePlaceholders(item.Value);
+                        discoveredClass.Metadata[item.Key] = resolvedValue;
+                    }
+
+                    classes.Add(discoveredClass);
                 }
             }
 
             return classes;
+        }
+
+        private Dictionary<string, string> ExtractMetadataFromAnnotation(string paramsString)
+        {
+            var metadata = new Dictionary<string, string>();
+            if (string.IsNullOrWhiteSpace(paramsString))
+            {
+                return metadata;
+            }
+
+            // Regex for Kotlin-style named arguments: key = "value"
+            var keyValueRegex = new Regex(@"\b(?<key>\w+)\s*=\s*""(?<value>.*?)""", RegexOptions.Compiled);
+            var matches = keyValueRegex.Matches(paramsString);
+
+            foreach (Match match in matches)
+            {
+                var key = match.Groups["key"].Value;
+                var value = match.Groups["value"].Value;
+
+                var metadataKey = char.ToUpperInvariant(key[0]) + key.Substring(1);
+                metadata[metadataKey] = value;
+                _logger.LogTrace("Extracted metadata from annotation: {Key} = '{Value}'", metadataKey, value);
+            }
+
+            return metadata;
         }
 
         private string ExtractPackageName(string content)

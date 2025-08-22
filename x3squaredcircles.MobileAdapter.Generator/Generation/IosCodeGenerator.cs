@@ -38,8 +38,9 @@ namespace x3squaredcircles.MobileAdapter.Generator.Generation
             {
                 try
                 {
-                    var fileContent = GenerateSwiftStruct(cls, typeMappings, config);
-                    var filePath = Path.Combine(outputDir, $"{cls.Name}.swift");
+                    var structName = GetTargetClassName(cls);
+                    var fileContent = GenerateSwiftStruct(cls, structName, typeMappings, config);
+                    var filePath = Path.Combine(outputDir, $"{structName}.swift");
                     await File.WriteAllTextAsync(filePath, fileContent);
                     generatedFiles.Add(filePath);
                     _logger.LogInformation("✓ Generated iOS adapter: {FilePath}", filePath);
@@ -53,8 +54,19 @@ namespace x3squaredcircles.MobileAdapter.Generator.Generation
             return generatedFiles;
         }
 
+        private string GetTargetClassName(DiscoveredClass cls)
+        {
+            if (cls.Metadata.TryGetValue("TargetName", out var targetName) && targetName is string name && !string.IsNullOrWhiteSpace(name))
+            {
+                _logger.LogDebug("Class '{OriginalName}' is being renamed to '{TargetName}' based on DSL metadata.", cls.Name, name);
+                return name;
+            }
+            return cls.Name;
+        }
+
         private string GenerateSwiftStruct(
             DiscoveredClass cls,
+            string targetStructName,
             Dictionary<string, TypeMappingInfo> typeMappings,
             GeneratorConfiguration config)
         {
@@ -69,7 +81,7 @@ namespace x3squaredcircles.MobileAdapter.Generator.Generation
 
             // Struct definition
             // Conforming to Codable for easy JSON serialization.
-            sb.AppendLine($"struct {cls.Name}: Codable {{");
+            sb.AppendLine($"struct {targetStructName}: Codable {{");
 
             // Properties
             foreach (var prop in cls.Properties)

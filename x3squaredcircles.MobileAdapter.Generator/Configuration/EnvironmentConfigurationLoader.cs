@@ -5,9 +5,14 @@ namespace x3squaredcircles.MobileAdapter.Generator.Configuration
 {
     /// <summary>
     /// A static class responsible for loading all application configuration from environment variables.
+    /// This loader adheres to the "Environment-Driven Supremacy" principle, using namespaced prefixes
+    /// and a defined order of precedence (Tool-Specific > Universal > Default).
     /// </summary>
     public static class EnvironmentConfigurationLoader
     {
+        private const string ToolPrefix = "ADAPTERGEN_";
+        private const string UniversalPrefix = "3SC_";
+
         /// <summary>
         /// Loads and parses all known environment variables into a strongly-typed GeneratorConfiguration object.
         /// </summary>
@@ -23,6 +28,7 @@ namespace x3squaredcircles.MobileAdapter.Generator.Configuration
             config.LanguageJavaScript = GetBool("LANGUAGE_JAVASCRIPT");
             config.LanguageTypeScript = GetBool("LANGUAGE_TYPESCRIPT");
             config.LanguagePython = GetBool("LANGUAGE_PYTHON");
+            config.LanguageGo = GetBool("LANGUAGE_GO");
             config.PlatformAndroid = GetBool("PLATFORM_ANDROID");
             config.PlatformIOS = GetBool("PLATFORM_IOS");
 
@@ -32,13 +38,13 @@ namespace x3squaredcircles.MobileAdapter.Generator.Configuration
             config.PatToken = GetString("PAT_TOKEN");
             config.PatSecretName = GetString("PAT_SECRET_NAME");
 
-            // Licensing
-            config.LicenseServer = GetString("LICENSE_SERVER");
+            // Licensing (with Universal Fallbacks)
+            config.LicenseServer = GetString("LICENSE_SERVER", universalName: "LICENSE_SERVER");
             config.ToolName = GetString("TOOL_NAME", "mobile-adapter-generator");
-            config.LicenseTimeout = GetInt("LICENSE_TIMEOUT", 300);
-            config.LicenseRetryInterval = GetInt("LICENSE_RETRY_INTERVAL", 30);
+            config.LicenseTimeout = GetInt("LICENSE_TIMEOUT", 300, universalName: "LICENSE_TIMEOUT");
+            config.LicenseRetryInterval = GetInt("LICENSE_RETRY_INTERVAL", 30, universalName: "LICENSE_RETRY_INTERVAL");
 
-            // Vault, Discovery, and Source Paths
+            // Vault, Discovery, Source, and Assembly Paths
             LoadVaultConfiguration(config);
             LoadDiscoveryConfiguration(config);
             LoadSourceConfiguration(config);
@@ -48,6 +54,9 @@ namespace x3squaredcircles.MobileAdapter.Generator.Configuration
             LoadOutputConfiguration(config);
             LoadCodeGenerationConfiguration(config);
             LoadTypeMappingConfiguration(config);
+
+            // Standardized Observability (Universal Only)
+            LoadObservabilityConfiguration(config);
 
             // Operational Mode
             config.Mode = GetEnum<OperationMode>("MODE", OperationMode.Generate);
@@ -60,8 +69,8 @@ namespace x3squaredcircles.MobileAdapter.Generator.Configuration
 
             // Tagging and Logging
             config.TagTemplate = GetString("TAG_TEMPLATE", "{branch}/{repo}/adapters/{version}");
-            config.Verbose = GetBool("VERBOSE");
-            config.LogLevel = GetEnum<LogLevel>("LOG_LEVEL", LogLevel.Information);
+            config.Verbose = GetBool("VERBOSE", universalName: "VERBOSE");
+            config.LogLevel = GetEnum<LogLevel>("LOG_LEVEL", LogLevel.Information, universalName: "LOG_LEVEL");
 
             return config;
         }
@@ -70,8 +79,8 @@ namespace x3squaredcircles.MobileAdapter.Generator.Configuration
 
         private static void LoadVaultConfiguration(GeneratorConfiguration config)
         {
-            config.Vault.Type = GetEnum<VaultType>("VAULT_TYPE", VaultType.None);
-            config.Vault.Url = GetString("VAULT_URL");
+            config.Vault.Type = GetEnum<VaultType>("VAULT_TYPE", VaultType.None, universalName: "VAULT_TYPE");
+            config.Vault.Url = GetString("VAULT_URL", universalName: "VAULT_URL");
             config.Vault.AzureClientId = GetString("AZURE_CLIENT_ID");
             config.Vault.AzureClientSecret = GetString("AZURE_CLIENT_SECRET");
             config.Vault.AzureTenantId = GetString("AZURE_TENANT_ID");
@@ -139,32 +148,62 @@ namespace x3squaredcircles.MobileAdapter.Generator.Configuration
             config.TypeMapping.UsePlatformCollections = GetBool("USE_PLATFORM_COLLECTIONS", true);
         }
 
+        private static void LoadObservabilityConfiguration(GeneratorConfiguration config)
+        {
+            config.Observability.FirehoseLogEndpointUrl = GetString(null, universalName: "LOG_ENDPOINT_URL");
+            config.Observability.FirehoseLogEndpointToken = GetString(null, universalName: "LOG_ENDPOINT_TOKEN");
+        }
+
         #endregion
 
         #region Private Getters
 
-        private static string GetString(string name, string defaultValue = null)
+        /// <summary>
+        /// Retrieves an environment variable with prefixing and override logic.
+        /// </summary>
+        /// <param name="name">The tool-specific variable name (without prefix).</param>
+        /// <param name="universalName">The universal variable name (without prefix).</param>
+        /// <returns>The value of the environment variable, or null if not found.</returns>
+        private static string GetVariable(string name, string universalName = null)
         {
-            return Environment.GetEnvironmentVariable(name) ?? defaultValue;
+            if (name != null)
+            {
+                var toolSpecificValue = Environment.GetEnvironmentVariable(ToolPrefix + name);
+                if (!string.IsNullOrEmpty(toolSpecificValue)) return toolSpecificValue;
+            }
+
+            if (universalName != null)
+            {
+                var universalValue = Environment.GetEnvironmentVariable(UniversalPrefix + universalName);
+                if (!string.IsNullOrEmpty(universalValue)) return universalValue;
+            }
+
+            return null;
         }
 
-        private static bool GetBool(string name, bool defaultValue = false)
+        private static string GetString(string name, string defaultValue = null, string universalName = null)
         {
-            var value = Environment.GetEnvironmentVariable(name);
+            return GetVariable(name, universalName) ?? defaultValue;
+        }
+
+        private static bool GetBool(string name, bool defaultValue = false, string universalName = null)
+        {
+            var value = GetVariable(name, universalName);
             if (string.IsNullOrEmpty(value)) return defaultValue;
             return string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(value, "1", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static int GetInt(string name, int defaultValue)
+        private static int GetInt(string name, int defaultValue, string universalName = null)
         {
-            var value = Environment.GetEnvironmentVariable(name);
+            var value = GetVariable(name, universalName);
             return int.TryParse(value, out var result) ? result : defaultValue;
         }
 
-        private static T GetEnum<T>(string name, T defaultValue) where T : struct, Enum
+        private static T GetEnum<T>(string name, T defaultValue, string universalName = null) where T : struct, Enum
         {
-            var value = Environment.GetEnvironmentVariable(name);
+            var value = GetVariable(name, universalName);
+            if (string.IsNullOrEmpty(value)) return defaultValue;
             return Enum.TryParse<T>(value, true, out var result) ? result : defaultValue;
         }
 

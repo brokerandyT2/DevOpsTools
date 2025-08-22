@@ -11,6 +11,7 @@ using x3squaredcircles.MobileAdapter.Generator.Discovery;
 using x3squaredcircles.MobileAdapter.Generator.Generation;
 using x3squaredcircles.MobileAdapter.Generator.Licensing;
 using x3squaredcircles.MobileAdapter.Generator.Models;
+using x3squaredcircles.MobileAdapter.Generator.Observability;
 using x3squaredcircles.MobileAdapter.Generator.Services;
 using x3squaredcircles.MobileAdapter.Generator.TypeMapping;
 
@@ -26,6 +27,8 @@ namespace x3squaredcircles.MobileAdapter.Generator
             // Immediately log tool execution for pipeline forensics, even before DI is set up.
             await WritePipelineToolsLogAsync();
 
+            var config = EnvironmentConfigurationLoader.LoadConfiguration();
+
             var host = Host.CreateDefaultBuilder(args)
                 .ConfigureServices((context, services) =>
                 {
@@ -33,8 +36,8 @@ namespace x3squaredcircles.MobileAdapter.Generator
                     services.AddSingleton<AdapterGeneratorEngine>();
 
                     // Register configuration and validation services
+                    services.AddSingleton(config); // Use the pre-loaded config
                     services.AddSingleton<ConfigurationValidator>();
-                    services.AddSingleton(provider => EnvironmentConfigurationLoader.LoadConfiguration());
 
                     // Register core services
                     services.AddSingleton<LicenseManager>();
@@ -42,6 +45,8 @@ namespace x3squaredcircles.MobileAdapter.Generator
                     services.AddSingleton<IGitOperationsService, GitOperationsService>();
                     services.AddSingleton<ITagTemplateService, TagTemplateService>();
                     services.AddSingleton<IFileOutputService, FileOutputService>();
+                    services.AddSingleton<IControlPointService, ControlPointService>();
+                    services.AddSingleton<IPlaceholderResolverService, PlaceholderResolverService>();
 
                     // Register discovery engine factory and language-specific engines
                     services.AddSingleton<IClassDiscoveryEngineFactory, ClassDiscoveryEngineFactory>();
@@ -51,6 +56,7 @@ namespace x3squaredcircles.MobileAdapter.Generator
                     services.AddTransient<JavaScriptDiscoveryEngine>();
                     services.AddTransient<TypeScriptDiscoveryEngine>();
                     services.AddTransient<PythonDiscoveryEngine>();
+                    services.AddTransient<GoDiscoveryEngine>();
 
                     // Register code generator factory and platform-specific generators
                     services.AddSingleton<ICodeGeneratorFactory, CodeGeneratorFactory>();
@@ -67,6 +73,17 @@ namespace x3squaredcircles.MobileAdapter.Generator
                 {
                     logging.ClearProviders();
                     logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
+                    logging.SetMinimumLevel(config.LogLevel);
+
+                    // Add the Firehose logger provider only if it is fully configured.
+                    if (!string.IsNullOrWhiteSpace(config.Observability.FirehoseLogEndpointUrl) &&
+                        !string.IsNullOrWhiteSpace(config.Observability.FirehoseLogEndpointToken))
+                    {
+                        logging.AddProvider(new FirehoseLoggerProvider(
+                            config,
+                            new ServiceCollection().AddHttpClient().BuildServiceProvider().GetRequiredService<IHttpClientFactory>()
+                        ));
+                    }
                 })
                 .Build();
 
@@ -77,6 +94,12 @@ namespace x3squaredcircles.MobileAdapter.Generator
                 await host.StartAsync();
 
                 logger.LogInformation("🚀 {ToolName} v{ToolVersion} starting main execution...", ToolName, ToolVersion);
+
+                // The status of the firehose logger is determined by the configuration.
+                if (!string.IsNullOrWhiteSpace(config.Observability.FirehoseLogEndpointUrl))
+                {
+                    logger.LogInformation("🔥 Firehose logging is active.");
+                }
 
                 var engine = host.Services.GetRequiredService<AdapterGeneratorEngine>();
                 var result = await engine.GenerateAdaptersAsync();
@@ -90,7 +113,9 @@ namespace x3squaredcircles.MobileAdapter.Generator
                     logger.LogError("❌ {ToolName} failed: {ErrorMessage}", ToolName, result.ErrorMessage);
                 }
 
-                await host.StopAsync();
+                // Host shutdown will correctly dispose the logger factory, which in turn disposes the provider.
+                await host.StopAsync(TimeSpan.FromSeconds(10));
+
                 return (int)result.ExitCode;
             }
             catch (MobileAdapterException ex)
@@ -103,7 +128,7 @@ namespace x3squaredcircles.MobileAdapter.Generator
             {
                 logger.LogCritical(ex, "An unhandled exception occurred, terminating the application.");
                 await host.StopAsync();
-                return (int)MobileAdapterExitCode.UnhandledException;
+                return (int)MobileAdapterException.UnhandledException;
             }
         }
 
@@ -115,10 +140,7 @@ namespace x3squaredcircles.MobileAdapter.Generator
         {
             try
             {
-                var logEntry = $"{ToolName}={ToolVersion}{Environment.NewLine}";
-                // Assumes running in a container where /src is the mounted workspace.
-                var logFilePath = Path.Combine("/src", "pipeline-tools.log");
-                await File.AppendAllTextAsync(logFilePath, logEntry);
+                ForensicLogger.WriteForensicLogEntryAsync(ToolName, ToolVersion);
             }
             catch (Exception ex)
             {

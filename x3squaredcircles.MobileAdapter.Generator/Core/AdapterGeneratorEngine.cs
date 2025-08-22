@@ -26,6 +26,7 @@ namespace x3squaredcircles.MobileAdapter.Generator.Core
         private readonly ICodeGeneratorFactory _codeGeneratorFactory;
         private readonly ITagTemplateService _tagTemplateService;
         private readonly IFileOutputService _fileOutputService;
+        private readonly IControlPointService _controlPointService;
 
         public AdapterGeneratorEngine(
             ILogger<AdapterGeneratorEngine> logger,
@@ -36,7 +37,8 @@ namespace x3squaredcircles.MobileAdapter.Generator.Core
             TypeMappingEngine typeMappingEngine,
             ICodeGeneratorFactory codeGeneratorFactory,
             ITagTemplateService tagTemplateService,
-            IFileOutputService fileOutputService)
+            IFileOutputService fileOutputService,
+            IControlPointService controlPointService)
         {
             _logger = logger;
             _config = config;
@@ -47,6 +49,7 @@ namespace x3squaredcircles.MobileAdapter.Generator.Core
             _codeGeneratorFactory = codeGeneratorFactory;
             _tagTemplateService = tagTemplateService;
             _fileOutputService = fileOutputService;
+            _controlPointService = controlPointService;
         }
 
         /// <summary>
@@ -85,13 +88,17 @@ namespace x3squaredcircles.MobileAdapter.Generator.Core
 
                 // Step 2: Discover Classes
                 _logger.LogInformation("Step 2/5: Discovering classes for adapter generation...");
+                await _controlPointService.InterceptAsync(ControlPointStage.Discovery, ControlPointEvent.Before, _config);
                 var discoveryEngine = _discoveryEngineFactory.Create();
                 result.DiscoveredClasses = await discoveryEngine.DiscoverClassesAsync(_config);
+                result.DiscoveredClasses = await _controlPointService.InterceptAsync(ControlPointStage.Discovery, ControlPointEvent.After, result.DiscoveredClasses);
+
                 if (result.DiscoveredClasses.Count == 0)
                 {
                     _logger.LogWarning("No classes found matching the specified discovery criteria. Nothing to generate.");
                     result.Success = true;
                     result.ExitCode = MobileAdapterExitCode.Success;
+                    await _controlPointService.NotifyAsync(ControlPointStage.Completion, ControlPointEvent.OnSuccess, result);
                     return result;
                 }
                 _logger.LogInformation("✓ Discovered {ClassCount} classes.", result.DiscoveredClasses.Count);
@@ -105,14 +112,15 @@ namespace x3squaredcircles.MobileAdapter.Generator.Core
                 if (_config.Mode == OperationMode.Analyze || _config.DryRun)
                 {
                     _logger.LogInformation("Analysis complete. Skipping code generation due to operational mode.");
-                    result.Success = true;
-                    result.ExitCode = MobileAdapterExitCode.Success;
                 }
                 else
                 {
                     _logger.LogInformation("Step 4/5: Generating adapter code...");
+                    await _controlPointService.InterceptAsync(ControlPointStage.Generation, ControlPointEvent.Before, result.DiscoveredClasses);
                     var codeGenerator = _codeGeneratorFactory.Create();
                     result.GeneratedFiles = await codeGenerator.GenerateAdaptersAsync(result.DiscoveredClasses, result.TypeMappings, _config);
+                    await _controlPointService.NotifyAsync(ControlPointStage.Generation, ControlPointEvent.After, result.GeneratedFiles);
+
                     if (result.GeneratedFiles.Count == 0)
                     {
                         throw new MobileAdapterException(MobileAdapterExitCode.GenerationFailure, "Code generation phase completed but produced no files.");
@@ -128,6 +136,16 @@ namespace x3squaredcircles.MobileAdapter.Generator.Core
 
                 result.Success = true;
                 result.ExitCode = MobileAdapterExitCode.Success;
+                await _controlPointService.NotifyAsync(ControlPointStage.Completion, ControlPointEvent.OnSuccess, result);
+                return result;
+            }
+            catch (ControlPointAbortedException ex)
+            {
+                _logger.LogWarning("Execution halted by Control Point: {Message}", ex.Message);
+                result.Success = true; // This is a successful, intentional stop.
+                result.ErrorMessage = ex.Message;
+                result.ExitCode = ex.ExitCode;
+                await _controlPointService.NotifyAsync(ControlPointStage.Completion, ControlPointEvent.OnFailure, result);
                 return result;
             }
             catch (MobileAdapterException ex)
@@ -136,6 +154,7 @@ namespace x3squaredcircles.MobileAdapter.Generator.Core
                 result.Success = false;
                 result.ErrorMessage = ex.Message;
                 result.ExitCode = ex.ExitCode;
+                await _controlPointService.NotifyAsync(ControlPointStage.Completion, ControlPointEvent.OnFailure, result);
                 return result;
             }
             catch (Exception ex)
@@ -144,6 +163,7 @@ namespace x3squaredcircles.MobileAdapter.Generator.Core
                 result.Success = false;
                 result.ErrorMessage = ex.Message;
                 result.ExitCode = MobileAdapterExitCode.UnhandledException;
+                await _controlPointService.NotifyAsync(ControlPointStage.Completion, ControlPointEvent.OnFailure, result);
                 return result;
             }
         }

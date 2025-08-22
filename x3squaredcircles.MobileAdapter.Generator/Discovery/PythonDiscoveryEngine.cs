@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using x3squaredcircles.MobileAdapter.Generator.Configuration;
 using x3squaredcircles.MobileAdapter.Generator.Models;
+using x3squaredcircles.MobileAdapter.Generator.Services;
 
 namespace x3squaredcircles.MobileAdapter.Generator.Discovery
 {
@@ -16,10 +17,12 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
     public class PythonDiscoveryEngine : IClassDiscoveryEngine
     {
         private readonly ILogger<PythonDiscoveryEngine> _logger;
+        private readonly IPlaceholderResolverService _placeholderResolverService;
 
-        public PythonDiscoveryEngine(ILogger<PythonDiscoveryEngine> logger)
+        public PythonDiscoveryEngine(ILogger<PythonDiscoveryEngine> logger, IPlaceholderResolverService placeholderResolverService)
         {
             _logger = logger;
+            _placeholderResolverService = placeholderResolverService;
         }
 
         public async Task<List<DiscoveredClass>> DiscoverClassesAsync(GeneratorConfiguration config)
@@ -61,10 +64,10 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
             var content = await File.ReadAllTextAsync(filePath);
             var cleanContent = RemoveCommentsAndStrings(content);
 
-            // Regex to find classes with the tracking decorator.
+            // Regex to find classes with the tracking decorator, capturing decorator parameters.
             var trackDecorator = config.TrackAttribute;
             var classRegex = new Regex(
-                $@"^\@{trackDecorator}(?:\(.*\))?\s*\nclass\s+(?<className>\w+)(?:\(.*\))?:(?<classBody>(?:\n(?:\s{{4,}}|\#.*).*)+)",
+                $@"^\@{trackDecorator}(?:\((?<decoratorParams>[^)]*)\))?\s*\nclass\s+(?<className>\w+)(?:\(.*\))?:(?<classBody>(?:\n(?:\s{{4,}}|\#.*).*)+)",
                 RegexOptions.Multiline | RegexOptions.ExplicitCapture);
 
             var matches = classRegex.Matches(cleanContent);
@@ -72,19 +75,57 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
             {
                 var className = match.Groups["className"].Value;
                 var classBody = match.Groups["classBody"].Value;
+                var decoratorParams = match.Groups["decoratorParams"].Success ? match.Groups["decoratorParams"].Value : string.Empty;
+
 
                 _logger.LogDebug("Found tracked Python class '{ClassName}' in file {File}", className, filePath);
 
-                classes.Add(new DiscoveredClass
+                var discoveredClass = new DiscoveredClass
                 {
                     Name = className,
                     Namespace = Path.GetFileNameWithoutExtension(filePath), // Simplified namespace
                     Properties = ExtractProperties(classBody),
                     Methods = ExtractMethods(classBody)
-                });
+                };
+
+                var metadata = ExtractMetadataFromDecorator(decoratorParams);
+                foreach (var item in metadata)
+                {
+                    var resolvedValue = _placeholderResolverService.ResolvePlaceholders(item.Value);
+                    discoveredClass.Metadata[item.Key] = resolvedValue;
+                }
+
+                classes.Add(discoveredClass);
             }
 
             return classes;
+        }
+
+        private Dictionary<string, string> ExtractMetadataFromDecorator(string paramsString)
+        {
+            var metadata = new Dictionary<string, string>();
+            if (string.IsNullOrWhiteSpace(paramsString))
+            {
+                return metadata;
+            }
+
+            // Regex to find key="value" or key='value' pairs.
+            var keyValueRegex = new Regex(@"\b(?<key>\w+)\s*=\s*(['""])(?<value>.*?)\1", RegexOptions.Compiled);
+            var matches = keyValueRegex.Matches(paramsString);
+
+            foreach (Match match in matches)
+            {
+                var key = match.Groups["key"].Value;
+                var value = match.Groups["value"].Value;
+
+                // Standardize the key by converting from snake_case to PascalCase
+                var pascalCaseKey = string.Concat(key.Split('_').Select(s => char.ToUpperInvariant(s[0]) + s.Substring(1)));
+
+                metadata[pascalCaseKey] = value;
+                _logger.LogTrace("Extracted metadata from decorator: {Key} = '{Value}'", pascalCaseKey, value);
+            }
+
+            return metadata;
         }
 
         private List<DiscoveredProperty> ExtractProperties(string classBody)

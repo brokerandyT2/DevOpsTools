@@ -13,6 +13,7 @@
         public bool LanguageJavaScript { get; set; }
         public bool LanguageTypeScript { get; set; }
         public bool LanguagePython { get; set; }
+        public bool LanguageGo { get; set; }
         public bool PlatformAndroid { get; set; }
         public bool PlatformIOS { get; set; }
 
@@ -59,6 +60,7 @@
         public OutputConfiguration Output { get; set; } = new OutputConfiguration();
         public CodeGenerationConfiguration CodeGeneration { get; set; } = new CodeGenerationConfiguration();
         public TypeMappingConfiguration TypeMapping { get; set; } = new TypeMappingConfiguration();
+        public ObservabilityConfiguration Observability { get; set; } = new ObservabilityConfiguration();
 
         // Helper methods to interpret the boolean flags
         public SourceLanguage GetSelectedLanguage()
@@ -69,6 +71,7 @@
             if (LanguageJavaScript) return SourceLanguage.JavaScript;
             if (LanguageTypeScript) return SourceLanguage.TypeScript;
             if (LanguagePython) return SourceLanguage.Python;
+            if (LanguageGo) return SourceLanguage.Go;
             return SourceLanguage.None;
         }
 
@@ -154,6 +157,12 @@
         public bool UsePlatformCollections { get; set; }
     }
 
+    public class ObservabilityConfiguration
+    {
+        public string FirehoseLogEndpointUrl { get; set; }
+        public string FirehoseLogEndpointToken { get; set; }
+    }
+
     #endregion
 
     #region Enums
@@ -162,8 +171,6 @@
     public enum TargetPlatform { None, Android, iOS }
     public enum OperationMode { Analyze, Generate, Validate }
     public enum VaultType { None, Azure, Aws, HashiCorp }
-
-    // The custom LogLevel enum has been removed to prevent ambiguity with Microsoft.Extensions.Logging.LogLevel
 
     #endregion
 }

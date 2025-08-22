@@ -1,165 +1,108 @@
-﻿# Using the Mobile Adapter Generator with Java
+﻿# Mobile Adapter Generator: Java Guide
 
-This document provides a comprehensive guide for generating native mobile data models from a Java codebase.
+This guide provides instructions for using the Mobile Adapter Generator with a Java codebase. The discovery mechanism for Java is **source code analysis**, where the tool inspects your `.java` files.
 
-## 1. Core Concept: Source File Analysis
+## 1. Create the Tracking Annotation
 
-The generator works with Java by parsing `.java` source files directly. It does not require compiled `.class` files or `.jar` archives. It searches for class definitions and analyzes their annotations, fields, and methods to create the mobile models.
+The generator identifies which classes to process by looking for a specific annotation. **You must define this annotation in your Java project.** This approach ensures the generator has zero compile-time dependencies on your code.
 
-## 2. How to Mark Classes for Discovery
+Create the following file in your project. The package is not important, but the annotation name (`TrackableDTO`) and method name (`targetName`) are.
 
-The recommended method for marking Java classes is by using a custom annotation. The generator's documentation server provides a ready-made annotation file for you to use.
+### `TrackableDTO.java`
 
-#### Step 1: Get the Tracking Annotation
-Download the `TrackableDTO.java` file from the generator's documentation server (running on port 8080 in the container) and add it to your Java project's source tree.
-
-```bash
-# Example: Download the annotation into your project
-curl http://localhost:8080/java > ./src/main/java/com/mycompany/shared/annotations/TrackableDTO.java
-The downloaded file will look like this:
-code
-Java
-package com.mycompany.shared.annotations; // Adjust package as needed
+```java
+package com.mycompany.annotations; // Your package here
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-@Retention(RetentionPolicy.SOURCE) // Retained for source-level tools
+/**
+ * Marks a class as a Data Transfer Object (DTO) to be discovered by the
+ * Mobile Adapter Generator.
+ */
+@Retention(RetentionPolicy.SOURCE)
 @Target(ElementType.TYPE)
 public @interface TrackableDTO {
+    /**
+     * A logical name for the target model that will be generated.
+     * This name can contain placeholders (e.g., "{MyModelName}") that will be
+     * resolved by environment variables at generation time.
+     * If not set, the original class name will be used.
+     * @return The target name for the generated model.
+     */
+    String targetName() default "";
 }
-Step 2: Apply the Annotation to Your DTOs
-Now, import and apply this annotation to any class you want the generator to discover.
-code
-Java
-package com.mycompany.shared.dtos;
+```
 
-import com.mycompany.shared.annotations.TrackableDTO;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+You can also download this file directly from the DX server: `http://localhost:8080/java` (when the container is running).
+
+## 2. Apply the Annotation to Your DTOs
+
+Apply the `@TrackableDTO` annotation to any class you want the generator to process.
+
+### Example without Placeholders:
+
+This will generate a mobile model named `UserProfile`.
+
+```java
+import com.mycompany.annotations.TrackableDTO;
 
 @TrackableDTO
-public class Itinerary {
+public class UserProfile {
+    private UUID userId;
+    private String fullName;
+    private boolean isActive;
+
+    // Getters and setters...
+}
+```
+
+### Example with Placeholder Resolution:
+
+This allows the CI/CD pipeline to control the name of the generated model.
+
+```java
+import com.mycompany.annotations.TrackableDTO;
+
+@TrackableDTO(targetName = "{userModelName}")
+public class User {
     private UUID id;
-    private String name;
-    private int durationDays;
-    private boolean isPublic;
-    private List<FlightSegment> flights;
-    private Map<String, String> notes;
+    private String email;
 
     // Getters and setters...
 }
+```
 
-@TrackableDTO
-public class FlightSegment {
-    public String airline;
-    public String flightNumber;
-    public int stops;
-    // Getters and setters...
-}
-3. Configuration
-You must configure the generator using environment variables in your CI/CD pipeline.
-Crucial Java Variables:
-LANGUAGE_JAVA: Must be set to true.
-TRACK_ATTRIBUTE: The simple name of the annotation class (e.g., TrackableDTO).
-SOURCE_PATHS: A semicolon-separated list of paths inside the container to your Java source directories (e.g., /src/src/main/java).
-Example Configuration for Android (Kotlin) Generation
-code
-Bash
-# 1. Language and Platform
-LANGUAGE_JAVA=true
-PLATFORM_ANDROID=true
+## 3. Configure the Generator
 
-# 2. Discovery Method
-# Find all classes with the @TrackableDTO annotation
-TRACK_ATTRIBUTE=TrackableDTO
+In your CI/CD pipeline, you will configure the generator to find your source code and process the annotated classes.
 
-# 3. Source Path (CRITICAL)
-# Path to the directory containing your Java source files
-SOURCE_PATHS=/src/my-shared-library/src/main/java
+### Environment Variables for Java:
 
-# 4. Core Config
-REPO_URL="https://github.com/my-org/my-repo"
-BRANCH="develop"
-LICENSE_SERVER="https://license.my-company.com"
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `ADAPTERGEN_LANGUAGE_JAVA` | **Required.** Tells the generator to use the Java discovery engine. | `true` |
+| `ADAPTERGEN_TRACK_ATTRIBUTE` | **Required.** The name of the annotation class to look for. | `TrackableDTO` |
+| `ADAPTERGEN_SOURCE_PATHS` | **Required.** Path inside the container to the directory containing your `.java` source files. | `/src/my-api-service/src/main/java` |
+| `ADAPTERGEN_CUSTOM_USERMODELNAME` | **(If using placeholders).** The value for the `{userModelName}` placeholder. | `CustomerProfileV2` |
 
-# 5. Output Config
-OUTPUT_DIR=/src/generated-mobile-models
-ANDROID_OUTPUT_DIR=./android
-ANDROID_PACKAGE_NAME="com.mycompany.app.models"
-Example Configuration for iOS (Swift) Generation
-Note the change in PLATFORM_* and output variables.
-code
-Bash
-# 1. Language and Platform
-LANGUAGE_JAVA=true
-PLATFORM_IOS=true
+### Example `docker run` command:
 
-# 2. Discovery Method
-TRACK_ATTRIBUTE=TrackableDTO
+This command runs the generator, targeting an iOS/Swift output. It assumes your repository is mounted at `/src`.
 
-# 3. Source Path (CRITICAL)
-SOURCE_PATHS=/src/my-shared-library/src/main/java
+```bash
+docker run --rm \
+  -v $(pwd):/src \
+  -e ADAPTERGEN_LANGUAGE_JAVA=true \
+  -e ADAPTERGEN_PLATFORM_IOS=true \
+  -e ADAPTERGEN_TRACK_ATTRIBUTE="TrackableDTO" \
+  -e ADAPTERGEN_SOURCE_PATHS="/src/my-api-service/src/main/java" \
+  -e ADAPTERGEN_IOS_MODULE_NAME="MyApiModels" \
+  -e ADAPTERGEN_CUSTOM_USERMODELNAME="CustomerProfileV2" \
+  -e "3SC_LICENSE_SERVER=https://licensing.3sc.com" \
+  3sc/mobile-adapter-generator:latest
+```
 
-# 4. Core Config
-REPO_URL="https://github.com/my-org/my-repo"
-BRANCH="develop"
-LICENSE_SERVER="https://license.my-company.com"
-
-# 5. Output Config
-OUTPUT_DIR=/src/generated-mobile-models
-IOS_OUTPUT_DIR=./ios
-IOS_MODULE_NAME="SharedModels"
-4. Expected Output
-Based on the Java examples above, the generator will produce the following files.
-Generated Kotlin (Itinerary.kt)
-code
-Kotlin
-package com.mycompany.app.models
-
-import java.util.UUID
-
-data class Itinerary(
-    val id: UUID,
-    val name: String,
-    val durationDays: Int,
-    val isPublic: Boolean,
-    val flights: List<FlightSegment>,
-    val notes: Map<String, String>
-)
-Generated Swift (FlightSegment.swift)
-code
-Swift
-// Generated by 3SC Mobile Adapter Generator
-import Foundation
-
-struct FlightSegment: Codable {
-    let airline: String
-    let flightNumber: String
-    let stops: Int32
-}
-5. Type Mapping Reference
-The following table shows how common Java types are mapped to their Kotlin and Swift equivalents.
-Java Type	Kotlin Type	Swift Type
-String	String	String
-int, Integer	Int	Int32
-long, Long	Long	Int64
-boolean, Boolean	Boolean	Bool
-double, Double	Double	Double
-float, Float	Float	Float
-BigDecimal	BigDecimal	Decimal
-Date, LocalDateTime	LocalDateTime	Date
-OffsetDateTime	OffsetDateTime	Date
-UUID	UUID	UUID
-List<T>	List<T>	[T]
-Map<K,V>	Map<K,V>	[K:V]
-Set<T>	Set<T>	Set<T>
-For any types not listed, you can provide a CUSTOM_TYPE_MAPPINGS JSON string in your configuration.
-6. Troubleshooting
-Error: No classes found.
-Is SOURCE_PATHS correct? The path must point to your Java source root (e.g., the java folder inside src/main) within the container's /src volume mount.
-Does the attribute name match? The string in TRACK_ATTRIBUTE must exactly match the simple class name of your annotation (e.g., TrackableDTO).
-Are the files .java files? The engine only parses source code, not compiled .class files.
+When this command runs against the placeholder example above, it will generate a Swift struct named `CustomerProfileV2.swift`.

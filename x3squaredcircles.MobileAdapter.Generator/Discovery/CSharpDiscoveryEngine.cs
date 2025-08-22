@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Threading.Tasks;
 using x3squaredcircles.MobileAdapter.Generator.Configuration;
 using x3squaredcircles.MobileAdapter.Generator.Models;
+using x3squaredcircles.MobileAdapter.Generator.Services;
 
 namespace x3squaredcircles.MobileAdapter.Generator.Discovery
 {
@@ -16,10 +17,12 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
     public class CSharpDiscoveryEngine : IClassDiscoveryEngine
     {
         private readonly ILogger<CSharpDiscoveryEngine> _logger;
+        private readonly IPlaceholderResolverService _placeholderResolverService;
 
-        public CSharpDiscoveryEngine(ILogger<CSharpDiscoveryEngine> logger)
+        public CSharpDiscoveryEngine(ILogger<CSharpDiscoveryEngine> logger, IPlaceholderResolverService placeholderResolverService)
         {
             _logger = logger;
+            _placeholderResolverService = placeholderResolverService;
         }
 
         public async Task<List<DiscoveredClass>> DiscoverClassesAsync(GeneratorConfiguration config)
@@ -96,7 +99,7 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
 
                 foreach (var type in types)
                 {
-                    classes.Add(AnalyzeType(type));
+                    classes.Add(AnalyzeType(type, config));
                 }
             }
             catch (ReflectionTypeLoadException ex)
@@ -128,7 +131,7 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
             return false;
         }
 
-        private DiscoveredClass AnalyzeType(Type type)
+        private DiscoveredClass AnalyzeType(Type type, GeneratorConfiguration config)
         {
             var discoveredClass = new DiscoveredClass
             {
@@ -137,6 +140,15 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
                 Properties = new List<DiscoveredProperty>(),
                 Methods = new List<DiscoveredMethod>()
             };
+
+            // Analyze attribute properties for richer DSL support
+            var trackAttribute = type.GetCustomAttributes(false)
+                .FirstOrDefault(attr => attr.GetType().Name.Contains(config.TrackAttribute));
+
+            if (trackAttribute != null)
+            {
+                ProcessAttributeProperty(trackAttribute, "TargetName", resolvedValue => discoveredClass.Metadata["TargetName"] = resolvedValue);
+            }
 
             // Analyze properties
             foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
@@ -167,6 +179,27 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
             }
 
             return discoveredClass;
+        }
+
+        private void ProcessAttributeProperty(object attribute, string propertyName, Action<string> onValueFound)
+        {
+            try
+            {
+                var propertyInfo = attribute.GetType().GetProperty(propertyName);
+                if (propertyInfo != null)
+                {
+                    var propertyValue = propertyInfo.GetValue(attribute) as string;
+                    if (!string.IsNullOrWhiteSpace(propertyValue))
+                    {
+                        var resolvedValue = _placeholderResolverService.ResolvePlaceholders(propertyValue);
+                        onValueFound(resolvedValue);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not process property '{PropertyName}' on tracking attribute '{AttributeName}'.", propertyName, attribute.GetType().Name);
+            }
         }
 
         private string GetTypeName(Type type)

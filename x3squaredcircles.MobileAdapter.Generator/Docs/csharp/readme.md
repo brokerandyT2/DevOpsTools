@@ -1,165 +1,98 @@
-﻿# Using the Mobile Adapter Generator with C#
+﻿# Mobile Adapter Generator: C# Guide
 
-This document provides a comprehensive guide for generating native mobile data models from a C# codebase.
+This guide provides instructions for using the Mobile Adapter Generator with a C# codebase. The primary discovery mechanism for C# is **assembly analysis**, where the tool inspects the compiled `.dll` files of your project.
 
-## 1. Core Concept: Assembly Analysis
+## 1. Create the Tracking Attribute
 
-The generator works with C# by analyzing **compiled .NET assemblies** (`.dll` files). It uses reflection to discover classes, properties, and methods.
+The generator identifies which classes to process by looking for a specific attribute. **You must define this attribute in your C# project.** This approach ensures the generator has zero compile-time dependencies on your code.
 
-**This is a critical point:** Your C# project containing the data models **must be successfully built** *before* you run the Mobile Adapter Generator. The generator does not read `.cs` source files; it reads the compiled output.
+Create the following file in your project. The namespace is not important, but the class name (`TrackableDTOAttribute`) and property names (`TargetName`) are.
 
-## 2. How to Mark Classes for Discovery
-
-The most common method for marking classes is by using a custom attribute. You define a simple attribute in your C# project and apply it to the classes you want to export.
-
-#### Step 1: Define the Tracking Attribute in Your C# Project
-Create a new file in your project (e.g., `ExportToMobileAttribute.cs`):
+### `TrackableDTOAttribute.cs`
 
 ```csharp
 using System;
 
+/// <summary>
+/// Marks a class as a Data Transfer Object (DTO) to be discovered by the
+/// Mobile Adapter Generator.
+/// </summary>
 [AttributeUsage(AttributeTargets.Class, Inherited = false, AllowMultiple = false)]
-public sealed class ExportToMobileAttribute : Attribute
+public sealed class TrackableDTOAttribute : Attribute
 {
-    public ExportToMobileAttribute() { }
-}
-Step 2: Apply the Attribute to Your DTOs
-Now, apply this attribute to any class you want the generator to find.
-code
-C#
-using System;
-using System.Collections.Generic;
+    /// <summary>
+    /// Gets or sets a logical name for the target model that will be generated.
+    /// This name can contain placeholders (e.g., "{MyModelName}") that will be
+    /// resolved by environment variables at generation time.
+    /// If not set, the original class name will be used.
+    /// </summary>
+    public string TargetName { get; set; }
 
-namespace MyCompany.Shared.DTOs
-{
-    [ExportToMobile]
-    public class UserProfile
+    public TrackableDTOAttribute()
     {
-        public Guid UserId { get; set; }
-        public string DisplayName { get; set; }
-        public int Age { get; set; }
-        public bool IsActive { get; set; }
-        public DateTime LastLoginDate { get; set; }
-        public List<string> Roles { get; set; }
-        public Dictionary<string, string> Preferences { get; set; }
-        public Address PrimaryAddress { get; set; }
-    }
-
-    [ExportToMobile]
-    public class Address
-    {
-        public string Street { get; set; }
-        public string City { get; set; }
-        public int PostalCode { get; set; }
     }
 }
+```
 
-3. Configuration
-You must configure the generator using environment variables in your CI/CD pipeline.
-Crucial C# Variables:
-LANGUAGE_CSHARP: Must be set to true.
-TRACK_ATTRIBUTE: The name of the attribute you created (e.g., ExportToMobile).
-TARGET_ASSEMBLY_PATH: The path inside the container to the directory containing your compiled .dll. Typically /src/YourProject/bin/Release/net8.0.
-Example Configuration for Android (Kotlin) Generation
-code
-Bash
-# 1. Language and Platform
-LANGUAGE_CSHARP=true
-PLATFORM_ANDROID=true
+## 2. Apply the Attribute to Your DTOs
 
-# 2. Discovery Method
-# Find all classes with the [ExportToMobile] attribute
-TRACK_ATTRIBUTE=ExportToMobile
+Apply the `[TrackableDTO]` attribute to any class you want the generator to process.
 
-# 3. Source Path (CRITICAL)
-# Path to the directory containing your compiled DTO assembly
-TARGET_ASSEMBLY_PATH=/src/MyCompany.Shared.DTOs/bin/Release/net8.0
+### Example without Placeholders:
 
-# 4. Core Config
-REPO_URL="https://dev.azure.com/my-org/my-project/_git/my-repo"
-BRANCH="main"
-LICENSE_SERVER="https://license.my-company.com"
+This will generate a mobile model named `UserProfile`.
 
-# 5. Output Config
-OUTPUT_DIR=/src/generated-mobile-models
-ANDROID_OUTPUT_DIR=./android
-ANDROID_PACKAGE_NAME="com.mycompany.app.models"
-Example Configuration for iOS (Swift) Generation
-Note the change in PLATFORM_* and output variables.
-code
-
-Bash
-# 1. Language and Platform
-LANGUAGE_CSHARP=true
-PLATFORM_IOS=true
-
-# 2. Discovery Method
-TRACK_ATTRIBUTE=ExportToMobile
-
-# 3. Source Path (CRITICAL)
-TARGET_ASSEMBLY_PATH=/src/MyCompany.Shared.DTOs/bin/Release/net8.0
-
-# 4. Core Config
-REPO_URL="https://dev.azure.com/my-org/my-project/_git/my-repo"
-BRANCH="main"
-LICENSE_SERVER="https://my-company.com"
-
-# 5. Output Config
-OUTPUT_DIR=/src/generated-mobile-models
-IOS_OUTPUT_DIR=./ios
-IOS_MODULE_NAME="SharedModels"
-4. Expected Output
-Based on the C# examples above, the generator will produce the following files.
-Generated Kotlin (UserProfile.kt)
-code
-Kotlin
-package com.mycompany.app.models
-
-import java.time.LocalDateTime
-import java.util.UUID
-
-data class UserProfile(
-    val userId: UUID,
-    val displayName: String,
-    val age: Int,
-    val isActive: Boolean,
-    val lastLoginDate: LocalDateTime,
-    val roles: List<String>,
-    val preferences: Map<String, String>,
-    val primaryAddress: Address
-)
-Generated Swift (Address.swift)
-code
-Swift
-// Generated by 3SC Mobile Adapter Generator
-import Foundation
-
-struct Address: Codable {
-    let street: String
-    let city: String
-    let postalCode: Int32
+```csharp
+[TrackableDTO]
+public class UserProfile
+{
+    public Guid UserId { get; set; }
+    public string FullName { get; set; }
+    public bool IsActive { get; set; }
 }
-5. Type Mapping Reference
-The following table shows how common C# types are mapped to their Kotlin and Swift equivalents.
-C# Type	Kotlin Type	Swift Type
-string	String	String
-int	Int	Int32
-long	Long	Int64
-bool	Boolean	Bool
-double	Double	Double
-float	Float	Float
-decimal	BigDecimal	Decimal
-DateTime	LocalDateTime	Date
-DateTimeOffset	OffsetDateTime	Date
-Guid	UUID	UUID
-byte[]	ByteArray	Data
-List<T>	List<T>	[T]
-Dictionary<K,V>	Map<K,V>	[K:V]
-For any types not listed, you can provide a CUSTOM_TYPE_MAPPINGS JSON string in your configuration.
-6. Troubleshooting
-Error: No classes found.
-Is your project built? The generator cannot find classes if the .dll does not exist. Make sure your CI pipeline has a dotnet build or dotnet publish step before the generator step.
-Is TARGET_ASSEMBLY_PATH correct? Double-check the path to your bin/Release/netX.0 folder. Remember this is the path inside the container's /src volume mount.
-Does the attribute name match? The string in TRACK_ATTRIBUTE must exactly match the name of the attribute class in your code (e.g., ExportToMobile).
-code
-Code
+```
+
+### Example with Placeholder Resolution:
+
+This allows the CI/CD pipeline to control the name of the generated model.
+
+```csharp
+[TrackableDTO(TargetName = "{userModelName}")]
+public class User
+{
+    public Guid Id { get; set; }
+    public string Email { get; set; }
+}
+```
+
+## 3. Configure the Generator
+
+In your CI/CD pipeline, you will configure the generator to find your compiled assemblies and process the attributed classes.
+
+### Environment Variables for C#:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `ADAPTERGEN_LANGUAGE_CSHARP` | **Required.** Tells the generator to use the C# discovery engine. | `true` |
+| `ADAPTERGEN_TRACK_ATTRIBUTE` | **Required.** The name of the attribute class to look for. | `TrackableDTO` or `TrackableDTOAttribute` |
+| `ADAPTERGEN_TARGET_ASSEMBLY_PATH` | **Required.** Path inside the container to the directory containing your compiled project DLLs. | `/src/MyProject.Api/bin/Release/net8.0` |
+| `ADAPTERGEN_CUSTOM_USERMODELNAME` | **(If using placeholders).** The value for the `{userModelName}` placeholder. | `CustomerProfileV2` |
+
+### Example `docker run` command:
+
+This command runs the generator, targeting an Android/Kotlin output. It assumes your repository is mounted at `/src`.
+
+```bash
+docker run --rm \
+  -v $(pwd):/src \
+  -e ADAPTERGEN_LANGUAGE_CSHARP=true \
+  -e ADAPTERGEN_PLATFORM_ANDROID=true \
+  -e ADAPTERGEN_TRACK_ATTRIBUTE="TrackableDTO" \
+  -e ADAPTERGEN_TARGET_ASSEMBLY_PATH="/src/MyProject.Api/bin/Release/net8.0" \
+  -e ADAPTERGEN_ANDROID_PACKAGE_NAME="com.mycompany.models" \
+  -e ADAPTERGEN_CUSTOM_USERMODELNAME="CustomerProfileV2" \
+  -e "3SC_LICENSE_SERVER=https://licensing.3sc.com" \
+  3sc/mobile-adapter-generator:latest
+```
+
+When this command runs against the placeholder example above, it will generate a Kotlin data class named `CustomerProfileV2.kt`.

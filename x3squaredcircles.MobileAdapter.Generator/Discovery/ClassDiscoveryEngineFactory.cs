@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Threading.Tasks;
 using x3squaredcircles.MobileAdapter.Generator.Configuration;
 using x3squaredcircles.MobileAdapter.Generator.Models;
 
@@ -72,6 +73,9 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
 
                 case SourceLanguage.Python:
                     return _serviceProvider.GetRequiredService<PythonDiscoveryEngine>();
+
+                case SourceLanguage.Go:
+                    return _serviceProvider.GetRequiredService<GoDiscoveryEngine>();
 
                 case SourceLanguage.None:
                     throw new MobileAdapterException(

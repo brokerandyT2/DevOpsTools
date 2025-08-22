@@ -42,6 +42,7 @@ namespace x3squaredcircles.MobileAdapter.Generator.Configuration
             // Validate output and vault settings
             ValidateOutputConfiguration(config, errors);
             ValidateVaultConfiguration(config, errors);
+            ValidateObservabilityConfiguration(config, errors);
 
             if (errors.Any())
             {
@@ -59,7 +60,7 @@ namespace x3squaredcircles.MobileAdapter.Generator.Configuration
         {
             if (config.GetSelectedLanguage() == SourceLanguage.None)
             {
-                errors.Add("No source language specified. Set exactly one language flag to true (e.g., LANGUAGE_CSHARP=true).");
+                errors.Add("No source language specified. Set exactly one language flag to true (e.g., ADAPTERGEN_LANGUAGE_CSHARP=true).");
             }
         }
 
@@ -67,21 +68,21 @@ namespace x3squaredcircles.MobileAdapter.Generator.Configuration
         {
             if (config.GetSelectedPlatform() == TargetPlatform.None)
             {
-                errors.Add("No target platform specified. Set exactly one platform flag to true (e.g., PLATFORM_ANDROID=true).");
+                errors.Add("No target platform specified. Set exactly one platform flag to true (e.g., ADAPTERGEN_PLATFORM_ANDROID=true).");
             }
         }
 
         private void ValidateCoreConfiguration(GeneratorConfiguration config, List<string> errors)
         {
-            if (string.IsNullOrWhiteSpace(config.RepoUrl)) errors.Add("Required environment variable REPO_URL is not set.");
-            if (string.IsNullOrWhiteSpace(config.Branch)) errors.Add("Required environment variable BRANCH is not set.");
+            if (string.IsNullOrWhiteSpace(config.RepoUrl)) errors.Add("Required environment variable ADAPTERGEN_REPO_URL is not set.");
+            if (string.IsNullOrWhiteSpace(config.Branch)) errors.Add("Required environment variable ADAPTERGEN_BRANCH is not set.");
         }
 
         private void ValidateLicensingConfiguration(GeneratorConfiguration config, List<string> errors)
         {
-            if (string.IsNullOrWhiteSpace(config.LicenseServer)) errors.Add("Required environment variable LICENSE_SERVER is not set.");
-            if (config.LicenseTimeout <= 0) errors.Add("LICENSE_TIMEOUT must be a positive integer.");
-            if (config.LicenseRetryInterval <= 0) errors.Add("LICENSE_RETRY_INTERVAL must be a positive integer.");
+            if (string.IsNullOrWhiteSpace(config.LicenseServer)) errors.Add("Required environment variable ADAPTERGEN_LICENSE_SERVER or 3SC_LICENSE_SERVER is not set.");
+            if (config.LicenseTimeout <= 0) errors.Add("ADAPTERGEN_LICENSE_TIMEOUT must be a positive integer.");
+            if (config.LicenseRetryInterval <= 0) errors.Add("ADAPTERGEN_LICENSE_RETRY_INTERVAL must be a positive integer.");
         }
 
         private void ValidateDiscoveryConfiguration(GeneratorConfiguration config, List<string> errors)
@@ -96,11 +97,11 @@ namespace x3squaredcircles.MobileAdapter.Generator.Configuration
 
             if (discoveryMethods.Count(isSet => isSet) == 0)
             {
-                errors.Add("No discovery method specified. Set one of: TRACK_ATTRIBUTE, TRACK_PATTERN, TRACK_NAMESPACE, or TRACK_FILE_PATTERN.");
+                errors.Add("No discovery method specified. Set one of: ADAPTERGEN_TRACK_ATTRIBUTE, ADAPTERGEN_TRACK_PATTERN, ADAPTERGEN_TRACK_NAMESPACE, or ADAPTERGEN_TRACK_FILE_PATTERN.");
             }
             else if (discoveryMethods.Count(isSet => isSet) > 1)
             {
-                errors.Add("Multiple discovery methods specified. Only one TRACK_* variable can be used per execution.");
+                errors.Add("Multiple discovery methods specified. Only one ADAPTERGEN_TRACK_* variable can be used per execution.");
             }
         }
 
@@ -110,34 +111,35 @@ namespace x3squaredcircles.MobileAdapter.Generator.Configuration
             {
                 case SourceLanguage.CSharp:
                     if (string.IsNullOrWhiteSpace(config.Assembly.CoreAssemblyPath) && string.IsNullOrWhiteSpace(config.Assembly.TargetAssemblyPath))
-                        errors.Add("For C# analysis, either CORE_ASSEMBLY_PATH or TARGET_ASSEMBLY_PATH must be specified.");
+                        errors.Add("For C# analysis, either ADAPTERGEN_CORE_ASSEMBLY_PATH or ADAPTERGEN_TARGET_ASSEMBLY_PATH must be specified.");
                     break;
                 case SourceLanguage.Java:
                 case SourceLanguage.Kotlin:
                 case SourceLanguage.JavaScript:
                 case SourceLanguage.TypeScript:
+                case SourceLanguage.Go:
                     if (string.IsNullOrWhiteSpace(config.Source.SourcePaths))
-                        errors.Add($"For {config.GetSelectedLanguage()} analysis, SOURCE_PATHS must be specified.");
+                        errors.Add($"For {config.GetSelectedLanguage()} analysis, ADAPTERGEN_SOURCE_PATHS must be specified.");
                     break;
                 case SourceLanguage.Python:
                     if (string.IsNullOrWhiteSpace(config.Source.PythonPaths))
-                        errors.Add("For Python analysis, PYTHON_PATHS must be specified.");
+                        errors.Add("For Python analysis, ADAPTERGEN_PYTHON_PATHS must be specified.");
                     break;
             }
         }
 
         private void ValidateOutputConfiguration(GeneratorConfiguration config, List<string> errors)
         {
-            if (string.IsNullOrWhiteSpace(config.Output.OutputDir)) errors.Add("OUTPUT_DIR cannot be empty.");
+            if (string.IsNullOrWhiteSpace(config.Output.OutputDir)) errors.Add("ADAPTERGEN_OUTPUT_DIR cannot be empty.");
 
             var selectedPlatform = config.GetSelectedPlatform();
             if (selectedPlatform == TargetPlatform.Android && string.IsNullOrWhiteSpace(config.Output.AndroidOutputDir))
             {
-                errors.Add("ANDROID_OUTPUT_DIR cannot be empty when targeting Android.");
+                errors.Add("ADAPTERGEN_ANDROID_OUTPUT_DIR cannot be empty when targeting Android.");
             }
             else if (selectedPlatform == TargetPlatform.iOS && string.IsNullOrWhiteSpace(config.Output.IosOutputDir))
             {
-                errors.Add("IOS_OUTPUT_DIR cannot be empty when targeting iOS.");
+                errors.Add("ADAPTERGEN_IOS_OUTPUT_DIR cannot be empty when targeting iOS.");
             }
         }
 
@@ -145,23 +147,34 @@ namespace x3squaredcircles.MobileAdapter.Generator.Configuration
         {
             if (config.Vault.Type == VaultType.None) return;
 
-            if (string.IsNullOrWhiteSpace(config.Vault.Url)) errors.Add("VAULT_URL is required when VAULT_TYPE is specified.");
+            if (string.IsNullOrWhiteSpace(config.Vault.Url)) errors.Add("ADAPTERGEN_VAULT_URL (or 3SC_VAULT_URL) is required when a VAULT_TYPE is specified.");
 
             switch (config.Vault.Type)
             {
                 case VaultType.Azure:
-                    if (string.IsNullOrWhiteSpace(config.Vault.AzureClientId)) errors.Add("AZURE_CLIENT_ID is required for Azure Key Vault.");
-                    if (string.IsNullOrWhiteSpace(config.Vault.AzureClientSecret)) errors.Add("AZURE_CLIENT_SECRET is required for Azure Key Vault.");
-                    if (string.IsNullOrWhiteSpace(config.Vault.AzureTenantId)) errors.Add("AZURE_TENANT_ID is required for Azure Key Vault.");
+                    if (string.IsNullOrWhiteSpace(config.Vault.AzureClientId)) errors.Add("ADAPTERGEN_AZURE_CLIENT_ID is required for Azure Key Vault.");
+                    if (string.IsNullOrWhiteSpace(config.Vault.AzureClientSecret)) errors.Add("ADAPTERGEN_AZURE_CLIENT_SECRET is required for Azure Key Vault.");
+                    if (string.IsNullOrWhiteSpace(config.Vault.AzureTenantId)) errors.Add("ADAPTERGEN_AZURE_TENANT_ID is required for Azure Key Vault.");
                     break;
                 case VaultType.Aws:
-                    if (string.IsNullOrWhiteSpace(config.Vault.AwsRegion)) errors.Add("AWS_REGION is required for AWS Secrets Manager.");
-                    if (string.IsNullOrWhiteSpace(config.Vault.AwsAccessKeyId)) errors.Add("AWS_ACCESS_KEY_ID is required for AWS Secrets Manager.");
-                    if (string.IsNullOrWhiteSpace(config.Vault.AwsSecretAccessKey)) errors.Add("AWS_SECRET_ACCESS_KEY is required for AWS Secrets Manager.");
+                    if (string.IsNullOrWhiteSpace(config.Vault.AwsRegion)) errors.Add("ADAPTERGEN_AWS_REGION is required for AWS Secrets Manager.");
+                    if (string.IsNullOrWhiteSpace(config.Vault.AwsAccessKeyId)) errors.Add("ADAPTERGEN_AWS_ACCESS_KEY_ID is required for AWS Secrets Manager.");
+                    if (string.IsNullOrWhiteSpace(config.Vault.AwsSecretAccessKey)) errors.Add("ADAPTERGEN_AWS_SECRET_ACCESS_KEY is required for AWS Secrets Manager.");
                     break;
                 case VaultType.HashiCorp:
-                    if (string.IsNullOrWhiteSpace(config.Vault.HashiCorpToken)) errors.Add("VAULT_TOKEN is required for HashiCorp Vault.");
+                    if (string.IsNullOrWhiteSpace(config.Vault.HashiCorpToken)) errors.Add("ADAPTERGEN_VAULT_TOKEN is required for HashiCorp Vault.");
                     break;
+            }
+        }
+
+        private void ValidateObservabilityConfiguration(GeneratorConfiguration config, List<string> errors)
+        {
+            var url = config.Observability.FirehoseLogEndpointUrl;
+            var token = config.Observability.FirehoseLogEndpointToken;
+
+            if (!string.IsNullOrWhiteSpace(url) && string.IsNullOrWhiteSpace(token))
+            {
+                errors.Add("If 3SC_LOG_ENDPOINT_URL is set, 3SC_LOG_ENDPOINT_TOKEN must also be set.");
             }
         }
     }

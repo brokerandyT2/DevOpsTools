@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using x3squaredcircles.MobileAdapter.Generator.Configuration;
 using x3squaredcircles.MobileAdapter.Generator.Models;
+using x3squaredcircles.MobileAdapter.Generator.Services;
 
 namespace x3squaredcircles.MobileAdapter.Generator.Discovery
 {
@@ -16,10 +17,12 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
     public class JavaScriptDiscoveryEngine : IClassDiscoveryEngine
     {
         private readonly ILogger<JavaScriptDiscoveryEngine> _logger;
+        private readonly IPlaceholderResolverService _placeholderResolverService;
 
-        public JavaScriptDiscoveryEngine(ILogger<JavaScriptDiscoveryEngine> logger)
+        public JavaScriptDiscoveryEngine(ILogger<JavaScriptDiscoveryEngine> logger, IPlaceholderResolverService placeholderResolverService)
         {
             _logger = logger;
+            _placeholderResolverService = placeholderResolverService;
         }
 
         public async Task<List<DiscoveredClass>> DiscoverClassesAsync(GeneratorConfiguration config)
@@ -64,7 +67,7 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
             // JS discovery relies on a JSDoc-style comment marker above the class.
             var trackAttribute = config.TrackAttribute;
             var classRegex = new Regex(
-                $@"/\*\*\s*\*\s*@{trackAttribute}\s*\*/\s*class\s+(?<className>\w+)\s*(?:extends\s+[\w\.]+)?\s*\{{(?<body>(?:[^{{}}]|{{(?<DEPTH>)|}} (?<-DEPTH>))*(?(DEPTH)(?!)))\}}",
+                $@"/\*\*(?<jsdoc>.*?)\*\s*@{trackAttribute}(?:.*)\s*\*/\s*class\s+(?<className>\w+)\s*(?:extends\s+[\w\.]+)?\s*\{{(?<body>(?:[^{{}}]|{{(?<DEPTH>)|}} (?<-DEPTH>))*(?(DEPTH)(?!)))\}}",
                 RegexOptions.Singleline | RegexOptions.ExplicitCapture);
 
             var matches = classRegex.Matches(cleanContent);
@@ -72,19 +75,54 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
             {
                 var className = match.Groups["className"].Value;
                 var classBody = match.Groups["body"].Value;
+                var jsdoc = match.Groups["jsdoc"].Value;
 
                 _logger.LogDebug("Found tracked JavaScript class '{ClassName}' in file {File}", className, filePath);
 
-                classes.Add(new DiscoveredClass
+                var discoveredClass = new DiscoveredClass
                 {
                     Name = className,
                     Namespace = Path.GetFileNameWithoutExtension(filePath),
                     Properties = ExtractProperties(classBody),
                     Methods = ExtractMethods(classBody)
-                });
+                };
+
+                var metadata = ExtractMetadataFromJsDoc(jsdoc);
+                foreach (var item in metadata)
+                {
+                    var resolvedValue = _placeholderResolverService.ResolvePlaceholders(item.Value);
+                    discoveredClass.Metadata[item.Key] = resolvedValue;
+                }
+
+                classes.Add(discoveredClass);
             }
 
             return classes;
+        }
+
+        private Dictionary<string, string> ExtractMetadataFromJsDoc(string jsdoc)
+        {
+            var metadata = new Dictionary<string, string>();
+            if (string.IsNullOrWhiteSpace(jsdoc))
+            {
+                return metadata;
+            }
+
+            // Look for custom tags like @targetName {my-target-name}
+            var tagRegex = new Regex(@"\*\s*@(?<key>\w+)\s+(?<value>.*?)\s*?(\r\n|\n|\*)", RegexOptions.Compiled);
+            var matches = tagRegex.Matches(jsdoc);
+
+            foreach (Match match in matches)
+            {
+                var key = match.Groups["key"].Value;
+                var value = match.Groups["value"].Value.Trim();
+
+                var metadataKey = char.ToUpperInvariant(key[0]) + key.Substring(1);
+                metadata[metadataKey] = value;
+                _logger.LogTrace("Extracted metadata from JSDoc: {Key} = '{Value}'", metadataKey, value);
+            }
+
+            return metadata;
         }
 
         private List<DiscoveredProperty> ExtractProperties(string classBody)

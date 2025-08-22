@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using x3squaredcircles.MobileAdapter.Generator.Configuration;
 using x3squaredcircles.MobileAdapter.Generator.Models;
+using x3squaredcircles.MobileAdapter.Generator.Services;
 
 namespace x3squaredcircles.MobileAdapter.Generator.Discovery
 {
@@ -16,10 +17,12 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
     public class JavaDiscoveryEngine : IClassDiscoveryEngine
     {
         private readonly ILogger<JavaDiscoveryEngine> _logger;
+        private readonly IPlaceholderResolverService _placeholderResolverService;
 
-        public JavaDiscoveryEngine(ILogger<JavaDiscoveryEngine> logger)
+        public JavaDiscoveryEngine(ILogger<JavaDiscoveryEngine> logger, IPlaceholderResolverService placeholderResolverService)
         {
             _logger = logger;
+            _placeholderResolverService = placeholderResolverService;
         }
 
         public async Task<List<DiscoveredClass>> DiscoverClassesAsync(GeneratorConfiguration config)
@@ -61,11 +64,10 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
             var content = await File.ReadAllTextAsync(filePath);
             var cleanContent = RemoveComments(content); // Clean content for more reliable regex matching
 
-            // Regex to find classes annotated with the tracking attribute.
-            // It looks for the attribute and then captures the entire class definition that follows.
+            // Regex to find classes annotated with the tracking attribute, now capturing annotation parameters.
             var trackAttribute = config.TrackAttribute;
             var classRegex = new Regex(
-                $@"@{trackAttribute}(?:\(.*\))?\s*(?:public|private|protected)?\s*(?:final|abstract)?\s*class\s+(?<className>\w+)\s*(?:extends\s+\w+)?\s*(?:implements\s+[\w,\s<>]+)?\s*\{{(?<body>(?:[^{{}}]|{{(?<DEPTH>)|}} (?<-DEPTH>))*(?(DEPTH)(?!)))\}}",
+                $@"@{trackAttribute}\s*(?:\((?<annotationParams>[^)]*)\))?\s*(?:public|private|protected)?\s*(?:final|abstract)?\s*class\s+(?<className>\w+)\s*(?:extends\s+\w+)?\s*(?:implements\s+[\w,\s<>]+)?\s*\{{(?<body>(?:[^{{}}]|{{(?<DEPTH>)|}} (?<-DEPTH>))*(?(DEPTH)(?!)))\}}",
                 RegexOptions.Singleline | RegexOptions.ExplicitCapture);
 
             var matches = classRegex.Matches(cleanContent);
@@ -76,20 +78,55 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
                 {
                     var className = match.Groups["className"].Value;
                     var classBody = match.Groups["body"].Value;
+                    var annotationParams = match.Groups["annotationParams"].Success ? match.Groups["annotationParams"].Value : string.Empty;
 
                     _logger.LogDebug("Found tracked Java class '{ClassName}' in file {File}", className, filePath);
 
-                    classes.Add(new DiscoveredClass
+                    var discoveredClass = new DiscoveredClass
                     {
                         Name = className,
                         Namespace = packageName,
                         Properties = ExtractProperties(classBody),
                         Methods = ExtractMethods(classBody)
-                    });
+                    };
+
+                    var metadata = ExtractMetadataFromAnnotation(annotationParams);
+                    foreach (var item in metadata)
+                    {
+                        var resolvedValue = _placeholderResolverService.ResolvePlaceholders(item.Value);
+                        discoveredClass.Metadata[item.Key] = resolvedValue;
+                    }
+
+                    classes.Add(discoveredClass);
                 }
             }
 
             return classes;
+        }
+
+        private Dictionary<string, string> ExtractMetadataFromAnnotation(string paramsString)
+        {
+            var metadata = new Dictionary<string, string>();
+            if (string.IsNullOrWhiteSpace(paramsString))
+            {
+                return metadata;
+            }
+
+            // Regex to find key = "value" pairs.
+            var keyValueRegex = new Regex(@"\b(?<key>\w+)\s*=\s*""(?<value>.*?)""", RegexOptions.Compiled);
+            var matches = keyValueRegex.Matches(paramsString);
+
+            foreach (Match match in matches)
+            {
+                var key = match.Groups["key"].Value;
+                var value = match.Groups["value"].Value;
+
+                var metadataKey = char.ToUpperInvariant(key[0]) + key.Substring(1);
+                metadata[metadataKey] = value;
+                _logger.LogTrace("Extracted metadata from annotation: {Key} = '{Value}'", metadataKey, value);
+            }
+
+            return metadata;
         }
 
         private string ExtractPackageName(string content)

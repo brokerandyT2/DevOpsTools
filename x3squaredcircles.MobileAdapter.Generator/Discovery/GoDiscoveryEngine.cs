@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using x3squaredcircles.MobileAdapter.Generator.Configuration;
 using x3squaredcircles.MobileAdapter.Generator.Models;
+using x3squaredcircles.MobileAdapter.Generator.Services;
 
 namespace x3squaredcircles.MobileAdapter.Generator.Discovery
 {
@@ -16,10 +17,12 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
     public class GoDiscoveryEngine : IClassDiscoveryEngine
     {
         private readonly ILogger<GoDiscoveryEngine> _logger;
+        private readonly IPlaceholderResolverService _placeholderResolverService;
 
-        public GoDiscoveryEngine(ILogger<GoDiscoveryEngine> logger)
+        public GoDiscoveryEngine(ILogger<GoDiscoveryEngine> logger, IPlaceholderResolverService placeholderResolverService)
         {
             _logger = logger;
+            _placeholderResolverService = placeholderResolverService;
         }
 
         public async Task<List<DiscoveredClass>> DiscoverClassesAsync(GeneratorConfiguration config)
@@ -63,10 +66,10 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
             var classes = new List<DiscoveredClass>();
             var content = await File.ReadAllTextAsync(filePath);
 
-            // Go discovery relies on a comment marker above the struct.
+            // Go discovery relies on a comment marker above the struct. Now captures directive parameters.
             var trackAttribute = config.TrackAttribute;
             var structRegex = new Regex(
-                $@"//\s*\@{trackAttribute}\s*\ntype\s+(?<structName>\w+)\s+struct\s*\{{(?<body>.*?)\}}",
+                $@"//\s*\@{trackAttribute}(?:\s+(?<directiveParams>.*))?\s*\ntype\s+(?<structName>\w+)\s+struct\s*\{{(?<body>.*?)\}}",
                 RegexOptions.Singleline | RegexOptions.ExplicitCapture);
 
             var matches = structRegex.Matches(content);
@@ -77,10 +80,11 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
                 {
                     var structName = match.Groups["structName"].Value;
                     var structBody = match.Groups["body"].Value;
+                    var directiveParams = match.Groups["directiveParams"].Success ? match.Groups["directiveParams"].Value.Trim() : string.Empty;
 
                     _logger.LogDebug("Found tracked Go struct '{StructName}' in file {File}", structName, filePath);
 
-                    classes.Add(new DiscoveredClass
+                    var discoveredClass = new DiscoveredClass
                     {
                         Name = structName,
                         Namespace = packageName,
@@ -88,11 +92,45 @@ namespace x3squaredcircles.MobileAdapter.Generator.Discovery
                         // For adapter generation, we focus on the data structure.
                         Properties = ExtractFields(structBody),
                         Methods = new List<DiscoveredMethod>() // Methods are extracted if needed in the future
-                    });
+                    };
+
+                    var metadata = ExtractMetadataFromDirective(directiveParams);
+                    foreach (var item in metadata)
+                    {
+                        var resolvedValue = _placeholderResolverService.ResolvePlaceholders(item.Value);
+                        discoveredClass.Metadata[item.Key] = resolvedValue;
+                    }
+
+                    classes.Add(discoveredClass);
                 }
             }
 
             return classes;
+        }
+
+        private Dictionary<string, string> ExtractMetadataFromDirective(string paramsString)
+        {
+            var metadata = new Dictionary<string, string>();
+            if (string.IsNullOrWhiteSpace(paramsString))
+            {
+                return metadata;
+            }
+
+            // Regex for Go-style directives: key="value"
+            var keyValueRegex = new Regex(@"\b(?<key>\w+)\s*=\s*""(?<value>.*?)""", RegexOptions.Compiled);
+            var matches = keyValueRegex.Matches(paramsString);
+
+            foreach (Match match in matches)
+            {
+                var key = match.Groups["key"].Value;
+                var value = match.Groups["value"].Value;
+
+                var metadataKey = char.ToUpperInvariant(key[0]) + key.Substring(1);
+                metadata[metadataKey] = value;
+                _logger.LogTrace("Extracted metadata from directive: {Key} = '{Value}'", metadataKey, value);
+            }
+
+            return metadata;
         }
 
         private string ExtractPackageName(string content)

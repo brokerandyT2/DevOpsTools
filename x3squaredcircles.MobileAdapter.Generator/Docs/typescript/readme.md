@@ -1,164 +1,104 @@
-﻿# Using the Mobile Adapter Generator with TypeScript
+﻿# Mobile Adapter Generator: TypeScript Guide
 
-This document provides a comprehensive guide for generating native mobile data models from a TypeScript codebase. TypeScript's strong typing makes it an ideal source of truth.
+This guide provides instructions for using the Mobile Adapter Generator with a TypeScript codebase. The discovery mechanism for TypeScript is **source code analysis**, where the tool inspects your `.ts` files.
 
-## 1. Core Concept: Source File Analysis
+## 1. Create the Tracking Decorator
 
-The generator works with TypeScript by parsing `.ts` source files directly. It does not require a compiled JavaScript output. The engine looks for exported `class` or `interface` definitions that are marked with a specific decorator and analyzes their properties and types.
+The generator identifies which classes to process by looking for a specific decorator. **You must define this decorator in your TypeScript project.** Decorators are functions, and this simple implementation ensures the generator has zero compile-time dependencies on your code.
 
-## 2. How to Mark Classes for Discovery
+Create the following file in your project. The file/module name is not important, but the exported function name (`TrackableDTO`) is.
 
-The recommended method is to use a custom decorator. The generator's documentation server provides a ready-made decorator file for you to use. This requires enabling decorator support in your TypeScript configuration.
+### `decorators.ts`
 
-#### Step 1: Enable Decorators in `tsconfig.json`
-You must enable `experimentalDecorators` in your project's `tsconfig.json` file.
-
-```json
-{
-  "compilerOptions": {
-    "target": "ES2021",
-    "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
-    // ... other options
-  }
-}
-Step 2: Get the Tracking Decorator
-Download the decorators.ts file from the generator's documentation server (running on port 8080 in the container) and add it to a shared location in your project.
-code
-Bash
-# Example: Download the decorator into your project
-curl http://localhost:8080/typescript > ./src/shared/decorators.ts
-The downloaded file will contain a simple identity decorator:
-code
-TypeScript
-// src/shared/decorators.ts
-export function TrackableDTO(constructor: Function) {
-    // This decorator only serves as a marker for the generator.
-}
-Step 3: Apply the Decorator to Your DTOs
-Now, import and apply this decorator to any class or interface you want the generator to discover.
-code
-TypeScript
-import { TrackableDTO } from '../shared/decorators';
-
-@TrackableDTO
-export interface LocationPin {
-    id: string; // UUID
-    latitude: number;
-    longitude: number;
-    title: string;
-    description?: string; // Optional property
-    tags: string[];
-    metadata: Record<string, any>;
+```typescript
+/**
+ * Interface describing the optional parameters for the TrackableDTO decorator.
+ */
+interface TrackableDTOOptions {
+  /**
+   * A logical name for the target model that will be generated.
+   * This name can contain placeholders (e.g., "{MyModelName}") that will be
+   * resolved by environment variables at generation time.
+   * If not set, the original class name will be used.
+   */
+  targetName?: string;
 }
 
-@TrackableDTO
-export class EventSchedule {
-    id: number;
-    eventName: string;
-    startTime: Date;
-    isAllDay: boolean;
-    attendees: LocationPin[];
+/**
+ * A class decorator that marks a class for discovery by the Mobile Adapter Generator.
+ * This is a no-op decorator at runtime; its only purpose is to provide a static
+ * marker and metadata for the generator's parsing process.
+ * @param options - Optional configuration for the generator.
+ */
+export function TrackableDTO(options?: TrackableDTOOptions): ClassDecorator {
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  return (target: object) => {};
 }
-3. Configuration
-You must configure the generator using environment variables in your CI/CD pipeline.
-Crucial TypeScript Variables:
-LANGUAGE_TYPESCRIPT: Must be set to true.
-TRACK_ATTRIBUTE: The name of the decorator you are using (e.g., TrackableDTO).
-SOURCE_PATHS: A semicolon-separated list of paths inside the container where your .ts source files are located.
-Example Configuration for Android (Kotlin) Generation
-code
-Bash
-# 1. Language and Platform
-LANGUAGE_TYPESCRIPT=true
-PLATFORM_ANDROID=true
+```
 
-# 2. Discovery Method
-# Find all classes/interfaces with the @TrackableDTO decorator
-TRACK_ATTRIBUTE=TrackableDTO
+You can also download this file directly from the DX server: `http://localhost:8080/typescript` (when the container is running).
 
-# 3. Source Path (CRITICAL)
-# Path to the directory containing your TypeScript models
-SOURCE_PATHS=/src/app/src/models
+## 2. Apply the Decorator to Your DTOs
 
-# 4. Core Config
-REPO_URL="https://github.com/my-org/my-react-native-app"
-BRANCH="feature/new-event-models"
-LICENSE_SERVER="https://license.my-company.com"
+Apply the `@TrackableDTO` decorator to any exported class you want the generator to process.
 
-# 5. Output Config
-OUTPUT_DIR=/src/generated-mobile-models
-ANDROID_OUTPUT_DIR=./android
-ANDROID_PACKAGE_NAME="com.mycompany.app.models"
-Example Configuration for iOS (Swift) Generation
-Note the change in PLATFORM_* and output variables.
-code
-Bash
-# 1. Language and Platform
-LANGUAGE_TYPESCRIPT=true
-PLATFORM_IOS=true
+### Example without Placeholders:
 
-# 2. Discovery Method
-TRACK_ATTRIBUTE=TrackableDTO
+This will generate a mobile model named `UserProfile`.
 
-# 3. Source Path (CRITICAL)
-SOURCE_PATHS=/src/app/src/models
+```typescript
+import { TrackableDTO } from './decorators';
 
-# 4. Core Config
-REPO_URL="https://github.com/my-org/my-react-native-app"
-BRANCH="feature/new-event-models"
-LICENSE_SERVER="https://license.my-company.com"
-
-# 5. Output Config
-OUTPUT_DIR=/src/generated-mobile-models
-IOS_OUTPUT_DIR=./ios
-IOS_MODULE_NAME="SharedModels"
-4. Expected Output
-Based on the TypeScript examples above, the generator will produce the following files.
-Generated Kotlin (LocationPin.kt)
-code
-Kotlin
-package com.mycompany.app.models
-
-import java.util.UUID
-
-data class LocationPin(
-    val id: UUID,
-    val latitude: Double,
-    val longitude: Double,
-    val title: String,
-    val description: String?,
-    val tags: List<String>,
-    val metadata: Map<String, Any>
-)
-Generated Swift (EventSchedule.swift)
-code
-Swift
-// Generated by 3SC Mobile Adapter Generator
-import Foundation
-
-struct EventSchedule: Codable {
-    let id: Int64
-    let eventName: String
-    let startTime: Date
-    let isAllDay: Bool
-    let attendees: [LocationPin]
+@TrackableDTO()
+export class UserProfile {
+  userId: string; // Assuming UUID is serialized as string
+  fullName: string;
+  isActive: boolean;
 }
-5. Type Mapping Reference
-The following table shows how common TypeScript types are mapped.
-TypeScript Type	Kotlin Type	Swift Type
-string	String	String
-number	Double	Double
-boolean	Boolean	Bool
-Date	LocalDateTime	Date
-any	Any	Any
-T[] or Array<T>	List<T>	[T]
-Record<K,V>	Map<K,V>	[K:V]
-`T	nullorT	undefined`
-property?: T	T?	T?
-6. Troubleshooting
-Error: No classes found.
-Is experimentalDecorators enabled? Check your tsconfig.json.
-Is SOURCE_PATHS correct? The path must point to your TypeScript source directory within the container's /src volume mount.
-Does the decorator name match? The string in TRACK_ATTRIBUTE must exactly match the name of your decorator function (e.g., TrackableDTO).
-Are your classes/interfaces exported? The generator typically only looks for exported types.
+```
+
+### Example with Placeholder Resolution:
+
+This allows the CI/CD pipeline to control the name of the generated model.
+
+```typescript
+import { TrackableDTO } from './decorators';
+
+@TrackableDTO({ targetName: '{userModelName}' })
+export class User {
+  id: string;
+  email: string;
+}
+```
+
+## 3. Configure the Generator
+
+In your CI/CD pipeline, you will configure the generator to find your source code and process the decorated classes.
+
+### Environment Variables for TypeScript:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `ADAPTERGEN_LANGUAGE_TYPESCRIPT` | **Required.** Tells the generator to use the TypeScript discovery engine. | `true` |
+| `ADAPTERGEN_TRACK_ATTRIBUTE` | **Required.** The name of the decorator function to look for. | `TrackableDTO` |
+| `ADAPTERGEN_SOURCE_PATHS` | **Required.** Path inside the container to the directory containing your `.ts` source files. | `/src/my-api-service/src/models` |
+| `ADAPTERGEN_CUSTOM_USERMODELNAME` | **(If using placeholders).** The value for the `{userModelName}` placeholder. | `CustomerProfileV2` |
+
+### Example `docker run` command:
+
+This command runs the generator, targeting an Android/Kotlin output. It assumes your repository is mounted at `/src`.
+
+```bash
+docker run --rm \
+  -v $(pwd):/src \
+  -e ADAPTERGEN_LANGUAGE_TYPESCRIPT=true \
+  -e ADAPTERGEN_PLATFORM_ANDROID=true \
+  -e ADAPTERGEN_TRACK_ATTRIBUTE="TrackableDTO" \
+  -e ADAPTERGEN_SOURCE_PATHS="/src/my-api-service/src/models" \
+  -e ADAPTERGEN_ANDROID_PACKAGE_NAME="com.mycompany.models" \
+  -e ADAPTERGEN_CUSTOM_USERMODELNAME="CustomerProfileV2" \
+  -e "3SC_LICENSE_SERVER=https://licensing.3sc.com" \
+  3sc/mobile-adapter-generator:latest
+```
+
+When this command runs against the placeholder example above, it will generate a Kotlin data class named `CustomerProfileV2.kt`.

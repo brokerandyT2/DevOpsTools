@@ -28,6 +28,7 @@ namespace x3squaredcircles.MobileAdapter.Generator.Models
     public class MobileAdapterException : Exception
     {
         public MobileAdapterExitCode ExitCode { get; }
+        public static int UnhandledException { get; internal set; }
 
         public MobileAdapterException(MobileAdapterExitCode exitCode, string message)
             : base(message)

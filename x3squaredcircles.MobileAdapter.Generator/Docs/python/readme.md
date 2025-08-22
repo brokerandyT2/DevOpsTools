@@ -1,162 +1,91 @@
-﻿
-# Using the Mobile Adapter Generator with Python
+﻿# Mobile Adapter Generator: Python Guide
 
-This document provides a comprehensive guide for generating native mobile data models from a Python codebase, leveraging type hints for accuracy.
+This guide provides instructions for using the Mobile Adapter Generator with a Python codebase. The discovery mechanism for Python is **source code analysis**, where the tool inspects your `.py` files.
 
-## 1. Core Concept: Source File Analysis
+## 1. Create the Tracking Decorator
 
-The generator works with Python by parsing `.py` source files directly. It looks for class definitions marked with a specific decorator and analyzes their class-level attributes or `__init__` methods for properties defined with **PEP 484 type hints**.
+The generator identifies which classes to process by looking for a specific decorator. **You must define this decorator in your Python project.** This approach ensures the generator has zero compile-time dependencies on your code.
 
-**This is a critical point:** While Python is dynamically typed, providing type hints is essential for the generator to produce accurate and useful native mobile models.
+Create the following file in your project. The file/module name is not important, but the function name (`TrackableDTO`) is.
 
-## 2. How to Mark Classes for Discovery
-
-The recommended method is to use a simple, custom decorator. This allows you to explicitly mark which classes should be processed.
-
-#### Step 1: Define the Tracking Decorator in a Shared Utility File
-Create a utility file in your project (e.g., `utils/tracking.py`) to define the decorator.
+### `decorators.py`
 
 ```python
-# utils/tracking.py
-def trackable_dto(cls):
-    """A simple identity decorator to mark classes for the mobile adapter generator."""
-    return cls
-Step 2: Apply the Decorator to Your DTOs
-Now, import and apply this decorator to any class you want the generator to discover. Use standard Python type hints to define your properties.
-code
-Python
-from datetime import datetime
-from typing import List, Dict, Optional
-from uuid import UUID
-from .utils.tracking import trackable_dto
+def TrackableDTO(target_name=None):
+    """
+    A class decorator that marks a class for discovery by the Mobile Adapter Generator.
+    This is a no-op decorator at runtime; its only purpose is to provide a static
+    marker and metadata for the generator's parsing process.
+    
+    :param target_name: Optional. A logical name for the target model. Can contain
+                        placeholders like "{MyModelName}".
+    """
+    def wrapper(cls):
+        # The decorator itself doesn't need to do anything to the class at runtime.
+        # It's just a marker for our static analysis tool.
+        return cls
+    return wrapper
+```
 
-@trackable_dto
-class TripPlan:
-    # Class-level attributes with type hints are discovered
-    id: UUID
-    destination: str
-    start_date: datetime
-    end_date: datetime
-    is_confirmed: bool
-    budget: float
-    travelers: List[str]
-    details: Optional[Dict[str, str]] # Optional notes
+## 2. Apply the Decorator to Your DTOs
 
-    # You can also define them in __init__
-    def __init__(self, id: UUID, destination: str, ...):
-        self.id = id
-        self.destination = destination
-        # ...
-Key Points:
-The decorator's name must match the TRACK_ATTRIBUTE configuration.
-Properties can be defined at the class level or within __init__. Class-level is generally cleaner and preferred.
-Use standard types from Python's typing module, such as List, Dict, and Optional, for best results.
-3. Configuration
-You must configure the generator using environment variables in your CI/CD pipeline.
-Crucial Python Variables:
-LANGUAGE_PYTHON: Must be set to true.
-TRACK_ATTRIBUTE: The name of the decorator you created (e.g., trackable_dto).
-PYTHON_PATHS: A semicolon-separated list of paths inside the container where your .py source files are located.
-Example Configuration for Android (Kotlin) Generation
-code
-Bash
-# 1. Language and Platform
-LANGUAGE_PYTHON=true
-PLATFORM_ANDROID=true
+Apply the `@TrackableDTO` decorator to any class you want the generator to process. The generator will analyze properties with type hints.
 
-# 2. Discovery Method
-# Find all classes with the @trackable_dto decorator
-TRACK_ATTRIBUTE=trackable_dto
+### Example without Placeholders:
 
-# 3. Source Path (CRITICAL)
-# Path to the directory containing your Python models
-PYTHON_PATHS=/src/my_project/models
+This will generate a mobile model named `UserProfile`.
 
-# 4. Core Config
-REPO_URL="https://github.com/my-org/my-python-backend"
-BRANCH="master"
-LICENSE_SERVER="https://license.my-company.com"
+```python
+from .decorators import TrackableDTO
 
-# 5. Output Config
-OUTPUT_DIR=/src/generated-mobile-models
-ANDROID_OUTPUT_DIR=./android
-ANDROID_PACKAGE_NAME="com.mycompany.app.models"
-Example Configuration for iOS (Swift) Generation
-Note the change in PLATFORM_* and output variables.
-code
-Bash
-# 1. Language and Platform
-LANGUAGE_PYTHON=true
-PLATFORM_IOS=true
+@TrackableDTO()
+class UserProfile:
+    user_id: str  # Assuming UUID is serialized as a string
+    full_name: str
+    is_active: bool
+```
 
-# 2. Discovery Method
-TRACK_ATTRIBUTE=trackable_dto
+### Example with Placeholder Resolution:
 
-# 3. Source Path (CRITICAL)
-PYTHON_PATHS=/src/my_project/models
+This allows the CI/CD pipeline to control the name of the generated model.
 
-# 4. Core Config
-REPO_URL="https://github.com/my-org/my-python-backend"
-BRANCH="master"
-LICENSE_SERVER="https://license.my-company.com"
+```python
+from .decorators import TrackableDTO
 
-# 5. Output Config
-OUTPUT_DIR=/src/generated-mobile-models
-IOS_OUTPUT_DIR=./ios
-IOS_MODULE_NAME="SharedModels"
-4. Expected Output
-Based on the Python example above, the generator will produce the following file.
-Generated Kotlin (TripPlan.kt)
-code
-Kotlin
-package com.mycompany.app.models
+@TrackableDTO(target_name="{userModelName}")
+class User:
+    id: str
+    email: str
+```
 
-import java.time.LocalDateTime
-import java.util.UUID
+## 3. Configure the Generator
 
-data class TripPlan(
-    val id: UUID,
-    val destination: String,
-    val startDate: LocalDateTime,
-    val endDate: LocalDateTime,
-    val isConfirmed: Boolean,
-    val budget: Double,
-    val travelers: List<String>,
-    val details: Map<String, String>?
-)
-Generated Swift (TripPlan.swift)
-code
-Swift
-// Generated by 3SC Mobile Adapter Generator
-import Foundation
+In your CI/CD pipeline, you will configure the generator to find your source code and process the decorated classes.
 
-struct TripPlan: Codable {
-    let id: UUID
-    let destination: String
-    let startDate: Date
-    let endDate: Date
-    let isConfirmed: Bool
-    let budget: Double
-    let travelers: [String]
-    let details: [String: String]?
-}
-5. Type Mapping Reference
-The following table shows how common Python types are mapped to their Kotlin and Swift equivalents.
-Python Type	Kotlin Type	Swift Type
-str	String	String
-int	Long	Int64
-float	Double	Double
-bool	Boolean	Bool
-datetime	LocalDateTime	Date
-UUID	UUID	UUID
-bytes	ByteArray	Data
-List[T] or list[T]	List<T>	[T]
-Dict[K,V] or dict[K,V]	Map<K,V>	[K:V]
-Optional[T]	T?	T?
-Any	Any	Any
-6. Troubleshooting
-Error: No classes found.
-Is PYTHON_PATHS correct? The path must point to your Python package directory within the container's /src volume mount.
-Does the decorator name match? The string in TRACK_ATTRIBUTE must exactly match the name of your decorator function (e.g., trackable_dto).
-Are you using type hints? While the generator may find classes without them, the generated properties will be inaccurate (Any/Any?).
-Is the decorator directly above the class keyword?
+### Environment Variables for Python:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `ADAPTERGEN_LANGUAGE_PYTHON` | **Required.** Tells the generator to use the Python discovery engine. | `true` |
+| `ADAPTERGEN_TRACK_ATTRIBUTE` | **Required.** The name of the decorator function to look for. | `TrackableDTO` |
+| `ADAPTERGEN_PYTHON_PATHS` | **Required.** Path inside the container to the directory containing your `.py` source files. | `/src/my-api-service/src/models` |
+| `ADAPTERGEN_CUSTOM_USERMODELNAME` | **(If using placeholders).** The value for the `{userModelName}` placeholder. | `CustomerProfileV2` |
+
+### Example `docker run` command:
+
+This command runs the generator, targeting an Android/Kotlin output. It assumes your repository is mounted at `/src`.
+
+```bash
+docker run --rm \
+  -v $(pwd):/src \
+  -e ADAPTERGEN_LANGUAGE_PYTHON=true \
+  -e ADAPTERGEN_PLATFORM_ANDROID=true \
+  -e ADAPTERGEN_TRACK_ATTRIBUTE="TrackableDTO" \
+  -e ADAPTERGEN_PYTHON_PATHS="/src/my-api-service/src/models" \
+  -e ADAPTERGEN_ANDROID_PACKAGE_NAME="com.mycompany.models" \
+  -e ADAPTERGEN_CUSTOM_USERMODELNAME="CustomerProfileV2" \
+  -e "3SC_LICENSE_SERVER=https://licensing.3sc.com" \
+  3sc/mobile-adapter-generator:latest
+```
+
+When this command runs against the placeholder example above, it will generate a Kotlin data class named `CustomerProfileV2.kt`.

@@ -1,91 +1,96 @@
-﻿/**
- * This file provides the documentation and constants for using the 3SC API Assembler DSL with JavaScript.
- * In JavaScript, metadata is attached using JSDoc-style comments (`/** ... */`) which are parsed by the 3sc-assembler tool.
- */
+﻿// 3SC API Assembler: JavaScript DSL
+// Version: 6.0.0 (Definitve)
+//
+// To use, require this file and wrap your handlers and methods with the provided functions.
 
-// --- Core Enums for the 3SC Assembler DSL ---
-// Use these string values in your JSDoc comments.
+'use strict';
 
 /**
+ * Defines when a logging hook should be executed.
  * @readonly
  * @enum {string}
  */
-const Cloud = {
-    Azure: 'Azure',
-    AWS: 'AWS',
-    GCP: 'GCP',
-    Oracle: 'Oracle',
-    MuleSoft: 'MuleSoft',
-    // ... other clouds
-    Local: 'Local',
-};
+const LoggingAction = Object.freeze({
+    OnInbound: "OnInbound",
+    OnOutbound: "OnOutbound",
+    OnError: "OnError"
+});
 
 /**
- * @readonly
- * @enum {string}
+ * Marks a class as a handler containing function entry points.
+ * @param {Function} constructor The class constructor to wrap.
+ * @returns {Function} The wrapped class with metadata.
  */
-const DeploymentPattern = {
-    Functions: 'Functions',
-    ApiGateway: 'ApiGateway',
-    AppService: 'AppService',
-    // ... other patterns
-    WebAPI: 'WebAPI',
-};
-
-/**
- * @readonly
- * @enum {string}
- */
-const SecretProvider = {
-    AzureKeyVault: 'AzureKeyVault',
-    AWSSecretsManager: 'AWSSecretsManager',
-    GCPSecretManager: 'GCPSecretManager',
-    HashiCorpVault: 'HashiCorpVault',
-};
-
-
-/*
---- Example Usage in your JavaScript code ---
-
-// In a 'deploymentDefinition.js' file:
-
-/**
- * Defines the CustomerServices deployment group.
- * @group {cloud: "Azure", pattern: "Functions"}
- */
-export const CustomerServices = "CustomerServices";
-
-/**
- * Defines the Authentication contract.
- * @contract {implementedBy: "security.JwtAuthService", forGroup: "CustomerServices"}
- */
-export const Authentication = "IAuthenticationHooks";
-
-
-// In a 'customerService.js' file:
-
-/**
- * The customer service business logic.
- * @apiEndpoint /customers
- * @deployTo CustomerServices
- * @requiresConnection {provider: "AzureKeyVault", contract: "PrimaryDb"}
- */
-export class CustomerService {
-    
-    /**
-     * Gets a customer by their ID.
-     * @httpGet /{id}
-     * @requires {contract: "IAuthenticationHooks", method: "validateToken"}
-     */
-    getCustomer(id) {
-        // ... business logic
-    }
+function FunctionHandler(constructor) {
+    constructor._3sc_function_handler = true;
+    return constructor;
 }
-*/
 
-// It is recommended to export the enums to use them in your application for better consistency.
+/**
+ * Groups related function entry points into a single deployable unit.
+ * @param {{serviceName: string, version: string}} options 
+ * @returns {function(Function): Function} A decorator function.
+ */
+function DeploymentGroup(options) {
+    return function(target) {
+        target._3sc_deployment_group = options;
+        return target;
+    };
+}
+
+/**
+ * Marks a method as a function entry point and defines its event source using a URN.
+ * @param {string} eventUrn The URN of the event source (e.g., "aws:s3:{bucket}:ObjectCreated:Put").
+ * @returns {function(Function, string, PropertyDescriptor): PropertyDescriptor} A decorator function.
+ */
+function EventSource(eventUrn) {
+    return function(target, propertyKey, descriptor) {
+        const method = descriptor.value;
+        if (!method._3sc_event_sources) {
+            method._3sc_event_sources = [];
+        }
+        method._3sc_event_sources.push({ eventUrn });
+        return descriptor;
+    };
+}
+
+/**
+ * Injects a cross-cutting concern or pre-processing gate.
+ * @param {{handler: Function, method: string}} options 
+ * @returns {function(Function, string, PropertyDescriptor): PropertyDescriptor} A decorator function.
+ */
+function Requires(options) {
+    return function(target, propertyKey, descriptor) {
+        const method = descriptor.value;
+        if (!method._3sc_requires) {
+            method._3sc_requires = [];
+        }
+        method._3sc_requires.push({ handler: options.handler.name, method: options.method });
+        return descriptor;
+    };
+}
+
+/**
+ * Injects an observability or logging hook.
+ * @param {{handler: Function, action: LoggingAction}} options 
+ * @returns {function(Function, string, PropertyDescriptor): PropertyDescriptor} A decorator function.
+ */
+function RequiresLogger(options) {
+    return function(target, propertyKey, descriptor) {
+        const method = descriptor.value;
+        if (!method._3sc_requires_loggers) {
+            method._3sc_requires_loggers = [];
+        }
+        method._3sc_requires_loggers.push({ handler: options.handler.name, action: options.action });
+        return descriptor;
+    };
+}
+
 module.exports = {
-    Cloud,
-    DeploymentPattern,
-    SecretProvider
+    LoggingAction,
+    FunctionHandler,
+    DeploymentGroup,
+    EventSource,
+    Requires,
+    RequiresLogger
 };

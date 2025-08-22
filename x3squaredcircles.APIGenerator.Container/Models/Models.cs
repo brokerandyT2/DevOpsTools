@@ -1,22 +1,30 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 
 namespace x3squaredcircles.datalink.container.Models
 {
     #region Core Application Models
 
     /// <summary>
-    /// Defines the standard, deterministic exit codes for the DataLink application,
+    /// Defines the standard, deterministic exit codes for the application,
     /// enabling reliable CI/CD pipeline integration and error handling.
     /// </summary>
     public enum ExitCode
     {
         Success = 0,
         TestHarnessFailed = 1,
+
+        // NEW: Dedicated exit code for the "list variables and exit" business rule.
+        // This allows a pipeline to specifically identify this outcome.
+        VariablesDiscovered = 2,
+
         InvalidConfiguration = 10,
         GitOperationFailed = 11,
         SourceAnalysisFailed = 12,
         CodeGenerationFailed = 13,
+        BuildFailed = 20,
+        DeployFailed = 21,
         UnhandledException = 99
     }
 
@@ -64,68 +72,96 @@ namespace x3squaredcircles.datalink.container.Models
 
         // Operational Overrides & Flags
         public bool ContinueOnTestFailure { get; set; }
-        public bool GenerateTestHarness { get; set; } = true; // Default to generating tests
+        public bool GenerateTestHarness { get; set; } = true;
+
+        // NEW: Property to hold the state of the "list variables and exit" flag.
+        public bool ListVariablesAndExit { get; set; }
+
+        // Target platform configuration
+        public string TargetLanguage { get; set; } = string.Empty;
+        public string CloudProvider { get; set; } = string.Empty;
+        public string DeploymentPattern { get; set; } = string.Empty;
+        public string OutputPath { get; set; } = "./output";
+        // NEW: Properties for Control Point configuration
+        public string? ControlPointOnStartupUrl { get; set; }
+        public string? ControlPointOnSuccessUrl { get; set; }
+        public string? ControlPointOnFailureUrl { get; set; }
+        public int ControlPointTimeoutSeconds { get; set; } = 60;
+        public string ControlPointTimeoutAction { get; set; } = "fail"; // "fail" or "continue"
+        public string? ControlPointDeploymentOverrideUrl { get; set; }
+        public string? LogEndpointUrl { get; set; }
+        public string? LogEndpointToken { get; set; }
     }
 
     #endregion
 
-    #region Intermediate Representation (IR) Models
+    #region Intermediate Representation (IR) Models for Signature-Driven Generation
 
     /// <summary>
     /// Represents the complete, language-agnostic blueprint of a service to be generated.
-    /// This is the output of the analysis stage and the input to the code weaving stage.
     /// </summary>
     public class ServiceBlueprint
     {
         public string ServiceName { get; set; } = string.Empty;
-        public string HandlerClassFullName { get; set; } = string.Empty; // e.g., "MyCompany.Handlers.OrderProcessor"
+        public string HandlerClassFullName { get; set; } = string.Empty;
         public List<TriggerMethod> TriggerMethods { get; set; } = new();
         public GenerationMetadata Metadata { get; set; } = new();
     }
 
     /// <summary>
-    /// Represents a single method to be exposed as an event-driven function.
+    /// Represents a single method to be exposed as an event-driven function,
+    /// capturing the complete signature details needed for code generation.
     /// </summary>
     public class TriggerMethod
     {
         public string MethodName { get; set; } = string.Empty;
-        public string HandlerClassFullName { get; set; } = string.Empty;
-        public List<TriggerDefinition> Triggers { get; set; } = new();
-        public List<HookDefinition> RequiredHooks { get; set; } = new();
-        public List<ParameterDefinition> Parameters { get; set; } = new();
         public string ReturnType { get; set; } = "void";
+
+        // Captures attributes applied directly to the method, e.g., [Function("MyFunction")]
+        public List<AttributeDefinition> Attributes { get; set; } = new();
+
+        // Captures the full list of parameters in the method's signature.
+        public List<ParameterDefinition> Parameters { get; set; } = new();
+
+        // Captures the developer's original DSL attributes for weaving cross-cutting concerns.
+        public List<DslAttributeDefinition> DslAttributes { get; set; } = new();
     }
 
     /// <summary>
-    /// Defines the event source that will invoke a method.
+    /// Represents a single, complete attribute discovered in the source code, preserving its exact syntax.
+    /// e.g., [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "widgets")]
     /// </summary>
-    public class TriggerDefinition
+    public class AttributeDefinition
     {
-        public string Type { get; set; } = string.Empty; // e.g., "Http", "AwsSqsQueue"
-        public string Name { get; set; } = string.Empty; // e.g., "/orders", "new-orders-queue"
-        public Dictionary<string, string> Properties { get; set; } = new(); // e.g., "Method: GET", "Filter: my-subscription"
+        public string Name { get; set; } = string.Empty; // "HttpTrigger"
+        public string FullSyntax { get; set; } = string.Empty; // The verbatim string of the attribute
     }
 
     /// <summary>
-    /// Defines a cross-cutting concern (like auth or logging) to be woven into the execution pipeline.
-    /// </summary>
-    public class HookDefinition
-    {
-        public string HookType { get; set; } = string.Empty; // "Requires", "RequiresLogger", or "RequiresResultsLogger"
-        public string HandlerClassFullName { get; set; } = string.Empty;
-        public string HandlerMethodName { get; set; } = string.Empty;
-        public string? LogAction { get; set; } // Only for RequiresLogger, e.g., "OnInbound"
-        public string? TraceVariableName { get; set; } // Only for RequiresResultsLogger
-    }
-
-    /// <summary>
-    /// Defines a parameter for a trigger method, used for dependency injection and payload binding.
+    /// Defines a single parameter for a trigger method, including its own attributes.
+    /// e.g., "[FromBody] Widget newWidget"
     /// </summary>
     public class ParameterDefinition
     {
-        public string Name { get; set; } = string.Empty;
-        public string TypeFullName { get; set; } = string.Empty;
-        public bool IsPayload { get; set; }
+        public string Name { get; set; } = string.Empty; // "newWidget"
+        public string TypeFullName { get; set; } = string.Empty; // "MyCompany.Models.Widget"
+        public List<AttributeDefinition> Attributes { get; set; } = new(); // e.g., [FromBody]
+
+        /// <summary>
+        /// Flag indicating if this parameter is a service to be injected via DI,
+        /// rather than an input from the function trigger itself.
+        /// </summary>
+        public bool IsBusinessLogicDependency { get; set; }
+    }
+
+    /// <summary>
+    /// Represents a parsed instance of one of the 3SC Assembler's DSL attributes
+    /// like [Requires] or [EventSource], used for weaving and analysis.
+    /// </summary>
+    public class DslAttributeDefinition
+    {
+        public string Name { get; set; } = string.Empty; // e.g., "EventSource", "Requires"
+        public Dictionary<string, string> Arguments { get; set; } = new();
     }
 
     /// <summary>

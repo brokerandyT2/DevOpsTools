@@ -1,153 +1,151 @@
-﻿# 3SC Conduit: TypeScript Developer Guide
+﻿# 3SC API Assembler: TypeScript Quick Start & Examples
 
-This guide provides TypeScript-specific examples for using the `3SC Conduit` decorators to define and generate event-driven services.
+This guide provides practical examples of how to use the 3SC Assembler DSL decorators in a TypeScript business logic project.
 
-To get started, download the `datalink.decorators.ts` file from the running Conduit container at `/code/typescript` and include it in your business logic project.
+## 1. Getting Started
 
-## 1. Defining a Service with `@DataConsumer`
+1. **Include the DSL:** Add the `three_sc_dsl.ts` file to your project's source directory.
+2. **Configure `tsconfig.json`:** Ensure `"experimentalDecorators": true` and `"emitDecoratorMetadata": true` are enabled in your `compilerOptions`.
+3. **Install `reflect-metadata`:** Run `npm install reflect-metadata`. Import it once at the top level of your application (e.g., in your main handler file).
+4. **Decorate Your Code:** Import and apply the decorators to your handler classes and methods.
 
-Mark any class that will contain business logic with the `@DataConsumer` decorator. This is the top-level entry point for the tool's analyzer.
+## 2. Core Concepts with Examples
+
+### `@FunctionHandler()`
+
+This decorator marks a class as a container for function entry points. The Assembler will scan any class decorated with `@FunctionHandler()`.
 
 ```typescript
-import { DataConsumer, Trigger, TriggerType } from './datalink.decorators';
-import { OrderEvent } from './dtos';
+import { FunctionHandler } from "./dsl/three_sc_dsl";
+import 'reflect-metadata'; // Import once
 
-@DataConsumer({ serviceName: "order-processing-service" })
-export class OrderProcessor {
-    // ... your trigger methods go here
+@FunctionHandler()
+export class OrderProcessingHandler {
+    // ... methods go here
 }
 ```
 
-## 2. Defining a Trigger with `@Trigger`
+### `@DeploymentGroup()`
 
-Decorate any public method inside your `@DataConsumer` class with a `@Trigger` decorator to expose it as a service entry point. The first parameter of the method is always the data contract (DTO).
-
-The TriggerType enum provides a list of supported event sources.
+This decorator defines a deployable microservice. It groups related functions together and can be applied at the class or method level.
 
 ```typescript
-@DataConsumer()
-export class OrderProcessor {
-    
-    // This method is triggered by a message on an AWS SQS Queue.
-    @Trigger({ type: TriggerType.AwsSqsQueue, name: "new-orders" })
-    public async handleNewOrder(order: OrderEvent, db: DbConnection): Promise<void> {
-        // Your business logic here...
-        // await db.execute("...");
+import { FunctionHandler, DeploymentGroup, EventSource } from "./dsl/three_sc_dsl";
+
+@FunctionHandler()
+@DeploymentGroup({ serviceName: "OrderServices", version: "v2.1" })
+export class OrderProcessingHandler {
+
+    // This method is part of the "OrderServices" v2.1 deployment group.
+    @EventSource("aws:sqs:{newOrdersQueue}:MessageReceived")
+    public async processNewOrder(sqsEvent: SQSEvent, repo: IOrderRepository): Promise<void> {
+        // ... logic ...
     }
 
-    // This method is triggered by an HTTP POST request.
-    @Trigger({ type: TriggerType.Http, name: "orders/manual-entry" })
-    public async handleManualOrder(order: OrderEvent, logger: ILogger): Promise<void> {
-        logger.info("Manual order received.");
-        // ...
-    }
-}
-```
-
-## 3. Requiring a Pre-Processing Gate with `@Requires`
-
-Use `@Requires` to enforce a gatekeeper, like an authentication check, before your main logic is executed. The handler should be a reference to a class and method that returns a boolean.
-
-```typescript
-// In your shared hooks library (e.g., hooks/auth.ts)
-export class MyAuthHooks {
-    public validate(request: HttpRequest): boolean { /* ... check JWT ... */ return true; }
-}
-
-// In your business logic
-import { MyAuthHooks } from './hooks/auth';
-
-@DataConsumer()
-export class AdminService {
-
-    @Trigger({ type: TriggerType.Http, name: "admin/run-job" })
-    @Requires({
-        handler: MyAuthHooks,
-        method: "validate"
-    })
-    public runAdminJob(payload: AdminJobPayload): void {
-        // This code only runs if MyAuthHooks.validate returns true.
+    // This method OVERRIDES the class-level group.
+    @DeploymentGroup({ serviceName: "InternalTools", version: "v1" })
+    @EventSource("aws:apigateway:proxy:/tools/reprocess-order/{id}:POST")
+    public async reprocessOrder(request: APIGatewayProxyEvent): Promise<any> {
+        // ... logic ...
     }
 }
 ```
 
-## 4. Requiring Logging with `@RequiresLogger`
+### `@EventSource()`
 
-Use `@RequiresLogger` to declaratively add observability. The tool will automatically wrap your trigger method in a try/catch block and call your specified logger.
+This is the primary decorator. It marks a method as a function entry point and defines its trigger with a URN. Placeholders like `{customerUploadsBucket}` are replaced by pipeline variables.
 
-The LoggingAction enum specifies when to log:
-- **OnInbound**: Logs the incoming DTO at the start.
-- **OnError**: Logs the exception in the catch block.
-- **OnOutbound**: Logs the return value of your method upon success.
+#### AWS S3 PUT Event:
 
 ```typescript
-// In your shared logging library (e.g., loggers/splunk.ts)
-export class SplunkLogger {
-    public log(payload: any | Error): void { /* Logic to send data to Splunk */ }
+@EventSource("aws:s3:{customerUploadsBucket}:ObjectCreated:Put")
+public async handleNewUpload(s3Event: S3Event, service: IFileMetadataService): Promise<void> {
+    // ... logic to process the new file ...
+}
+```
+
+#### Azure HTTP GET Event:
+
+```typescript
+@EventSource("azure:apigateway:proxy:/products/{id}:GET")
+public async getProductById(req: HttpRequest, id: string, repo: IProductRepository): Promise<Product> {
+    // ... logic to fetch a product ...
+    return new Product();
+}
+```
+
+#### GCP Pub/Sub Event:
+
+```typescript
+@EventSource("gcp:pubsub:{newProductsTopic}:MessagePublished")
+public async onNewProductPublished(message: PubsubMessage): Promise<void> {
+    // ... logic to handle the Pub/Sub message ...
+}
+```
+
+## 3. Weaving Cross-Cutting Concerns
+
+### `@Requires()`
+
+Use this to inject a pre-processing gate. The specified handler method must return a `boolean` or `Promise<boolean>`. If it returns `false`, the main business logic is not executed.
+
+```typescript
+// In a separate "hooks/security.ts" file...
+export class SecurityHooks {
+    public validateJwt(req: HttpRequest): boolean {
+        // logic to validate the JWT from the request header
+        console.log("Validating JWT...");
+        return true; // or false
+    }
 }
 
-// In your business logic
-import { SplunkLogger } from './loggers/splunk';
+// In your Function Handler...
+import { SecurityHooks } from "./hooks/security";
 
-@DataConsumer()
-export class OrderProcessor {
-
-    @Trigger({ type: TriggerType.Http, name: "orders" })
-    @RequiresLogger({
-        handler: SplunkLogger,
-        action: LoggingAction.OnInbound
-    })
-    @RequiresLogger({
-        handler: SplunkLogger,
-        action: LoggingAction.OnError
-    })
-    public handleNewOrder(order: OrderEvent): void {
-        // ... your logic ...
+@FunctionHandler()
+export class AdminPanelHandler {
+    @Requires({ handler: SecurityHooks, method: "validateJwt" })
+    @EventSource("azure:apigateway:proxy:/admin/dashboard:GET")
+    public async getDashboard(req: HttpRequest): Promise<DashboardData> {
+        // This code only runs if validateJwt returns true.
+        return new DashboardData();
     }
 }
 ```
 
-## 5. Trace Logging with `@RequiresResultsLogger`
+### `@RequiresLogger()`
 
-Use `@RequiresResultsLogger` to get deep insight into your method's execution by logging the state of local variables. This feature is more limited in transpiled languages like TypeScript compared to C#.
+Use this to inject observability and create an audit trail.
+
+- **LoggingAction.OnInbound:** Logs the request payload before your business logic runs.
+- **LoggingAction.OnError:** Logs any exception that occurs during the pipeline.
 
 ```typescript
-@DataConsumer()
-export class ComplexWorkflow {
-
-    @Trigger({ type: TriggerType.Http, name: "workflows/start" })
-    @RequiresResultsLogger({
-        handler: SplunkLogger,
-        method: "log",
-        variable: "validated"
-    })
-    @RequiresResultsLogger({
-        handler: SplunkLogger,
-        method: "log",
-        variable: "enriched"
-    })
-    public startWorkflow(payload: InitialPayload): void {
-        const validated = this.validate(payload);
-        // The tool will inject a call to SplunkLogger.log(validated) here.
-
-        const enriched = this.enrich(validated);
-        // The tool will inject a call to SplunkLogger.log(enriched) here.
-
-        this.save(enriched);
+// In a separate "hooks/auditing.ts" file...
+export class AuditLogger {
+    public logRequest(payload: any): void {
+        // logic to serialize and log the incoming payload
+        console.log(`AUDIT - Inbound Payload: ${JSON.stringify(payload)}`);
     }
 
-    private validate(p: InitialPayload): ValidatedPayload { 
-        // Validation logic
-        return {} as ValidatedPayload;
+    public logFailure(error: Error): void {
+        // logic to log critical failure details
+        console.error(`AUDIT - Critical Failure: ${error.message}`);
     }
-    
-    private enrich(p: ValidatedPayload): EnrichedPayload { 
-        // Enrichment logic
-        return {} as EnrichedPayload;
-    }
-    
-    private save(p: EnrichedPayload): void { 
-        // Save logic
+}
+
+// In your Function Handler...
+import { LoggingAction } from "./dsl/three_sc_dsl";
+import { AuditLogger } from "./hooks/auditing";
+
+@FunctionHandler()
+export class PaymentProcessingHandler {
+    @RequiresLogger({ handler: AuditLogger, action: LoggingAction.OnInbound })
+    @RequiresLogger({ handler: AuditLogger, action: LoggingAction.OnError })
+    @EventSource("aws:sqs:{paymentQueue}:MessageReceived")
+    public async processPayment(message: SQSMessage, gateway: IPaymentGateway): Promise<void> {
+        // Business logic that might throw an exception...
+        throw new Error("Payment gateway timed out");
     }
 }
 ```

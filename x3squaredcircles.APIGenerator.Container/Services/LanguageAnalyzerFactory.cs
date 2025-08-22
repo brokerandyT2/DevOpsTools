@@ -39,37 +39,42 @@ namespace x3squaredcircles.datalink.container.Services
         {
             _logger.LogDebug($"Detecting programming language in directory: {sourceDirectory}");
 
-            // The order of these checks is important, as some projects (e.g., TS)
-            // will also contain JS files or a package.json.
+            // The order of these checks is important. We look for the most specific project
+            // files first to avoid ambiguity (e.g., a TypeScript project also contains JS files).
 
             if (Directory.GetFiles(sourceDirectory, "*.csproj", SearchOption.AllDirectories).Any())
             {
-                _logger.LogInfo("Detected C# project (.csproj).");
+                _logger.LogInfo("Detected C# project (.csproj). Using CSharpAnalyzerService.");
                 return _serviceProvider.GetRequiredService<CSharpAnalyzerService>();
             }
-            if (Directory.GetFiles(sourceDirectory, "pom.xml", SearchOption.AllDirectories).Any() || Directory.GetFiles(sourceDirectory, "build.gradle", SearchOption.AllDirectories).Any())
+            if (Directory.GetFiles(sourceDirectory, "pom.xml", SearchOption.AllDirectories).Any() ||
+                Directory.GetFiles(sourceDirectory, "build.gradle", SearchOption.AllDirectories).Any())
             {
-                _logger.LogInfo("Detected Java project (pom.xml or build.gradle).");
+                _logger.LogInfo("Detected Java project (pom.xml or build.gradle). Using JavaAnalyzerService.");
                 return _serviceProvider.GetRequiredService<JavaAnalyzerService>();
             }
-            if (Directory.GetFiles(sourceDirectory, "requirements.txt", SearchOption.AllDirectories).Any() || Directory.GetFiles(sourceDirectory, "pyproject.toml", SearchOption.AllDirectories).Any())
+            if (Directory.GetFiles(sourceDirectory, "requirements.txt", SearchOption.AllDirectories).Any() ||
+                Directory.GetFiles(sourceDirectory, "pyproject.toml", SearchOption.AllDirectories).Any())
             {
-                _logger.LogInfo("Detected Python project (requirements.txt or pyproject.toml).");
+                _logger.LogInfo("Detected Python project (requirements.txt or pyproject.toml). Using PythonAnalyzerService.");
                 return _serviceProvider.GetRequiredService<PythonAnalyzerService>();
             }
-            if (Directory.GetFiles(sourceDirectory, "*.ts", SearchOption.AllDirectories).Any() && Directory.GetFiles(sourceDirectory, "package.json", SearchOption.AllDirectories).Any())
+            // Check for TypeScript specifically before JavaScript.
+            if (Directory.GetFiles(sourceDirectory, "*.ts", SearchOption.AllDirectories).Any() &&
+                Directory.GetFiles(sourceDirectory, "package.json", SearchOption.AllDirectories).Any())
             {
-                _logger.LogInfo("Detected TypeScript project (*.ts and package.json).");
-                return _serviceProvider.GetRequiredService<TypeScriptAnalyzerService>();
+                _logger.LogInfo("Detected TypeScript project (*.ts and package.json). Using JavaScriptAnalyzerService for both.");
+                return _serviceProvider.GetRequiredService<JavaScriptAnalyzerService>();
             }
-            if (Directory.GetFiles(sourceDirectory, "*.js", SearchOption.AllDirectories).Any() && Directory.GetFiles(sourceDirectory, "package.json", SearchOption.AllDirectories).Any())
+            if (Directory.GetFiles(sourceDirectory, "*.js", SearchOption.AllDirectories).Any() &&
+                Directory.GetFiles(sourceDirectory, "package.json", SearchOption.AllDirectories).Any())
             {
-                _logger.LogInfo("Detected JavaScript project (*.js and package.json).");
+                _logger.LogInfo("Detected JavaScript project (*.js and package.json). Using JavaScriptAnalyzerService.");
                 return _serviceProvider.GetRequiredService<JavaScriptAnalyzerService>();
             }
             if (Directory.GetFiles(sourceDirectory, "go.mod", SearchOption.AllDirectories).Any())
             {
-                _logger.LogInfo("Detected Go project (go.mod).");
+                _logger.LogInfo("Detected Go project (go.mod). Using GoAnalyzerService.");
                 return _serviceProvider.GetRequiredService<GoAnalyzerService>();
             }
 

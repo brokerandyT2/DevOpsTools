@@ -21,7 +21,8 @@ namespace x3squaredcircles.datalink.container.Services
 
     /// <summary>
     /// Implements source code analysis for C# using the Roslyn compiler API. It discovers classes
-    /// decorated with [DataConsumer] and methods with [Trigger] to build a language-agnostic blueprint.
+    /// decorated with [FunctionHandler] and methods with [EventSource] to build a language-agnostic blueprint
+    /// that captures the full, verbatim signature of the function entry points.
     /// </summary>
     public class CSharpAnalyzerService : ILanguageAnalyzerService
     {
@@ -45,35 +46,11 @@ namespace x3squaredcircles.datalink.container.Services
                 return blueprints;
             }
 
-            var syntaxTrees = csharpFiles.Select(file => CSharpSyntaxTree.ParseText(File.ReadAllText(file), path: file));
+            // Create a Roslyn compilation. This is essential for semantic analysis, which allows us
+            // to understand the types of parameters and not just their syntax.
+            var compilation = await CreateCompilationAsync(sourceDirectory, csharpFiles);
 
-            // Create a list of metadata references. This is critical for the semantic model to understand types.
-            // Start with the core .NET assemblies.
-            var references = new List<MetadataReference>
-    {
-        MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
-        MetadataReference.CreateFromFile(Assembly.Load("System.Runtime").Location),
-        MetadataReference.CreateFromFile(Assembly.Load("System.Linq").Location),
-        MetadataReference.CreateFromFile(Assembly.Load("System.Threading.Tasks").Location)
-    };
-
-            // In a real pipeline, the developer's compiled business logic DLL would be available.
-            // We simulate this by assuming it's in a 'bin' directory relative to the source.
-            // This is a pragmatic step to ensure the semantic model can resolve the developer's custom types.
-            var binDirectory = Path.Combine(sourceDirectory, "bin", "Debug", "net8.0"); // A common convention
-            if (Directory.Exists(binDirectory))
-            {
-                var refAssemblies = Directory.GetFiles(binDirectory, "*.dll");
-                references.AddRange(refAssemblies.Select(dll => MetadataReference.CreateFromFile(dll)));
-            }
-
-            // Create a Roslyn compilation of all C# files in the directory.
-            var compilation = CSharpCompilation.Create("DataLinkAnalyzerAssembly",
-                    options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary))
-                .AddReferences(references)
-                .AddSyntaxTrees(syntaxTrees);
-
-            foreach (var syntaxTree in syntaxTrees)
+            foreach (var syntaxTree in compilation.SyntaxTrees)
             {
                 var semanticModel = compilation.GetSemanticModel(syntaxTree);
                 var root = await syntaxTree.GetRootAsync();
@@ -81,167 +58,220 @@ namespace x3squaredcircles.datalink.container.Services
 
                 foreach (var classDecl in classDeclarations)
                 {
-                    if (GetAttribute(classDecl, "DataConsumer") == null) continue;
+                    // Find classes marked with our primary [FunctionHandler] attribute.
+                    if (GetDslAttribute(classDecl, semanticModel, "FunctionHandler") == null) continue;
 
                     var classSymbol = semanticModel.GetDeclaredSymbol(classDecl);
                     if (classSymbol == null) continue;
 
-                    var serviceName = GetAttributeNamedArgument(GetAttribute(classDecl, "DataConsumer"), "ServiceName") ??
-                                      classSymbol.Name.Replace("Service", "").Replace("Processor", "");
+                    var serviceNameArg = GetDslAttribute(classDecl, semanticModel, "FunctionHandler")?.Arguments["ServiceName"];
+                    var serviceName = string.IsNullOrEmpty(serviceNameArg) ? classSymbol.Name.Replace("Handler", "") : serviceNameArg;
 
                     var blueprint = new ServiceBlueprint
                     {
-                        ServiceName = serviceName,
+                        ServiceName = serviceName!,
                         HandlerClassFullName = classSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
                     };
 
                     var methods = classDecl.Members.OfType<MethodDeclarationSyntax>();
                     foreach (var methodDecl in methods)
                     {
-                        if (!GetAttributes(methodDecl, "Trigger").Any()) continue;
+                        var eventSourceAttr = GetDslAttribute(methodDecl, semanticModel, "EventSource");
+                        if (eventSourceAttr == null) continue;
 
                         var triggerMethod = ParseTriggerMethod(methodDecl, semanticModel, classSymbol);
-                        blueprint.TriggerMethods.Add(triggerMethod);
+                        if (triggerMethod != null)
+                        {
+                            blueprint.TriggerMethods.Add(triggerMethod);
+                        }
                     }
 
                     if (blueprint.TriggerMethods.Any())
                     {
                         blueprints.Add(blueprint);
-                        _logger.LogDebug($"Discovered DataConsumer: {blueprint.ServiceName} in class {classSymbol.Name}");
+                        _logger.LogDebug($"Discovered Function Handler: {blueprint.ServiceName} in class {classSymbol.Name} with {blueprint.TriggerMethods.Count} entry point(s).");
                     }
                 }
             }
 
             if (!blueprints.Any())
             {
-                _logger.LogWarning("C# analysis complete, but no classes decorated with [DataConsumer] were found.");
+                _logger.LogWarning("C# analysis complete, but no classes decorated with [FunctionHandler] were found.");
             }
             else
             {
-                _logger.LogInfo($"✓ C# analysis complete. Found {blueprints.Count} services to generate.");
+                _logger.LogInfo($"✓ C# analysis complete. Found {blueprints.Count} service(s) to generate.");
             }
 
             _logger.LogEndPhase("C# Source Code Analysis", true);
             return blueprints;
         }
 
-        private TriggerMethod ParseTriggerMethod(MethodDeclarationSyntax methodDecl, SemanticModel semanticModel, INamedTypeSymbol classSymbol)
+        private async Task<Compilation> CreateCompilationAsync(string sourceDirectory, string[] csharpFiles)
         {
+            var syntaxTrees = new List<SyntaxTree>();
+            foreach (var file in csharpFiles)
+            {
+                var content = await File.ReadAllTextAsync(file);
+                syntaxTrees.Add(CSharpSyntaxTree.ParseText(content, path: file));
+            }
+
+            // We must provide the compiler with references to understand external types (like from NuGet packages).
+            // Start with the core .NET assemblies.
+            var references = new List<MetadataReference>
+            {
+                MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+                MetadataReference.CreateFromFile(Assembly.Load("System.Runtime").Location)
+            };
+
+            // Attempt to find compiled assemblies (.dlls) in the source directory. This is crucial for
+            // resolving types from the developer's own projects and dependencies.
+            var dllFiles = Directory.GetFiles(sourceDirectory, "*.dll", SearchOption.AllDirectories);
+            foreach (var dll in dllFiles)
+            {
+                try
+                {
+                    references.Add(MetadataReference.CreateFromFile(dll));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug($"Could not load reference assembly '{Path.GetFileName(dll)}': {ex.Message}");
+                }
+            }
+
+            return CSharpCompilation.Create("AssemblerAnalyzerAssembly",
+                syntaxTrees: syntaxTrees,
+                references: references,
+                options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        }
+
+        /// <summary>
+        /// Parses a MethodDeclarationSyntax to create a language-agnostic TriggerMethod model.
+        /// </summary>
+        private TriggerMethod? ParseTriggerMethod(MethodDeclarationSyntax methodDecl, SemanticModel semanticModel, INamedTypeSymbol classSymbol)
+        {
+            var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl);
+            if (methodSymbol == null) return null;
+
             var triggerMethod = new TriggerMethod
             {
                 MethodName = methodDecl.Identifier.ValueText,
-                ReturnType = methodDecl.ReturnType.ToString(),
-                HandlerClassFullName = classSymbol.ToDisplayString()
+                ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
             };
 
-            foreach (var triggerAttr in GetAttributes(methodDecl, "Trigger"))
-            {
-                triggerMethod.Triggers.Add(ParseAttribute(triggerAttr).AsTrigger());
-            }
+            // Capture all attributes on the method itself, preserving their full syntax.
+            triggerMethod.Attributes.AddRange(
+                methodDecl.AttributeLists.SelectMany(al => al.Attributes)
+                .Select(attr => new AttributeDefinition
+                {
+                    Name = attr.Name.ToString(),
+                    FullSyntax = attr.ToFullString().Trim()
+                }));
 
-            var hookAttributes = GetAttributes(methodDecl, "Requires")
-                .Concat(GetAttributes(methodDecl, "RequiresLogger"))
-                .Concat(GetAttributes(methodDecl, "RequiresResultsLogger"));
+            // Capture all 3SC DSL attributes ([EventSource], [Requires], etc.)
+            triggerMethod.DslAttributes.AddRange(GetAllDslAttributes(methodDecl, semanticModel));
 
-            foreach (var hookAttr in hookAttributes)
-            {
-                triggerMethod.RequiredHooks.Add(ParseAttribute(hookAttr).AsHook());
-            }
 
-            bool isFirstParam = true;
+            // Analyze each parameter in the method's signature.
             foreach (var paramSyntax in methodDecl.ParameterList.Parameters)
             {
-                var symbol = semanticModel.GetDeclaredSymbol(paramSyntax);
-                triggerMethod.Parameters.Add(new ParameterDefinition
+                var paramSymbol = semanticModel.GetDeclaredSymbol(paramSyntax);
+                if (paramSymbol == null) continue;
+
+                var parameterDef = new ParameterDefinition
                 {
                     Name = paramSyntax.Identifier.ValueText,
-                    TypeFullName = symbol?.Type?.ToDisplayString() ?? paramSyntax.Type?.ToString() ?? "dynamic",
-                    IsPayload = isFirstParam
-                });
-                isFirstParam = false;
+                    TypeFullName = paramSymbol.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                    // A parameter is a business logic dependency if it's an interface and NOT a known trigger input type.
+                    // This heuristic can be expanded with more sophisticated checks.
+                    IsBusinessLogicDependency = paramSymbol.Type.TypeKind == TypeKind.Interface && !IsKnownTriggerType(paramSymbol.Type)
+                };
+
+                // Capture all attributes on the parameter, e.g., [HttpTrigger], [FromBody].
+                parameterDef.Attributes.AddRange(
+                    paramSyntax.AttributeLists.SelectMany(al => al.Attributes)
+                    .Select(attr => new AttributeDefinition
+                    {
+                        Name = attr.Name.ToString(),
+                        FullSyntax = attr.ToFullString().Trim()
+                    }));
+
+                triggerMethod.Parameters.Add(parameterDef);
             }
+
             return triggerMethod;
         }
 
-        private IEnumerable<AttributeSyntax> GetAttributes(MemberDeclarationSyntax member, string attributeName)
+        /// <summary>
+        /// Checks if a type is a known, common input type for a serverless trigger,
+        /// which helps distinguish them from injectable business logic services.
+        /// </summary>
+        private bool IsKnownTriggerType(ITypeSymbol typeSymbol)
         {
-            return member.AttributeLists.SelectMany(list => list.Attributes)
-                .Where(attr => attr.Name.ToString() == attributeName || attr.Name.ToString() == $"{attributeName}Attribute");
+            var fullTypeName = typeSymbol.ToDisplayString();
+            // This list can be expanded to include types from various cloud SDKs (S3Event, EventGridEvent, etc.)
+            return fullTypeName.Contains("HttpRequestData") ||
+                   fullTypeName.Contains("ILambdaContext") ||
+                   fullTypeName.Contains("SQSEvent") ||
+                   fullTypeName.Contains("TimerInfo") ||
+                   typeSymbol.BaseType?.ToString() == "System.ValueType" || // Structs
+                   fullTypeName == "string"; // Primitives
         }
 
-        private AttributeSyntax? GetAttribute(MemberDeclarationSyntax member, string attributeName)
+        /// <summary>
+        /// Parses a 3SC DSL attribute (like [EventSource]) into a structured DslAttributeDefinition object.
+        /// </summary>
+        private DslAttributeDefinition? GetDslAttribute(MemberDeclarationSyntax member, SemanticModel model, string attributeName)
         {
-            return GetAttributes(member, attributeName).FirstOrDefault();
-        }
+            var attributeSyntax = member.AttributeLists
+                .SelectMany(list => list.Attributes)
+                .FirstOrDefault(attr => attr.Name.ToString() == attributeName || attr.Name.ToString() == $"{attributeName}Attribute");
 
-        private string? GetAttributeNamedArgument(AttributeSyntax? attribute, string argumentName)
-        {
-            if (attribute == null) return null;
-            var arg = attribute.ArgumentList?.Arguments
-                .FirstOrDefault(a => a.NameEquals?.Name.Identifier.ValueText == argumentName);
+            if (attributeSyntax == null) return null;
 
-            return arg?.Expression is LiteralExpressionSyntax literal ? literal.Token.ValueText : null;
-        }
-
-        private (string Name, string Value)[] ParseAttributeArguments(AttributeSyntax attribute)
-        {
-            if (attribute.ArgumentList == null) return Array.Empty<(string, string)>();
-
-            var args = new List<(string Name, string Value)>();
-            int positionalIndex = 0;
-            foreach (var arg in attribute.ArgumentList.Arguments)
+            var dslAttribute = new DslAttributeDefinition { Name = attributeName };
+            if (attributeSyntax.ArgumentList != null)
             {
-                var name = arg.NameEquals?.Name.Identifier.ValueText ?? GetPositionalArgumentName(attribute.Name.ToString(), positionalIndex++);
-                var value = arg.Expression.ToString();
-
-                if (arg.Expression is LiteralExpressionSyntax literal) value = literal.Token.ValueText;
-                else if (arg.Expression is TypeOfExpressionSyntax typeOf) value = typeOf.Type.ToString();
-                else if (value.Contains('.')) value = value.Split('.').Last();
-
-                args.Add((name, value));
-            }
-            return args.ToArray();
-        }
-
-        private string GetPositionalArgumentName(string attributeName, int index)
-        {
-            // By convention, map positional arguments to their most likely property name.
-            if (attributeName.Contains("Trigger"))
-            {
-                return index == 0 ? "Type" : "Name";
-            }
-            return index == 0 ? "Handler" : "Method";
-        }
-
-        private ParsedAttribute ParseAttribute(AttributeSyntax attribute)
-        {
-            return new ParsedAttribute(attribute.Name.ToString().Replace("Attribute", ""), ParseAttributeArguments(attribute));
-        }
-
-        private record ParsedAttribute(string Name, (string Name, string Value)[] Arguments)
-        {
-            public TriggerDefinition AsTrigger()
-            {
-                var props = Arguments.Where(a => a.Name != "Type" && a.Name != "Name").ToDictionary(a => a.Name, a => a.Value);
-                return new TriggerDefinition
+                foreach (var arg in attributeSyntax.ArgumentList.Arguments)
                 {
-                    Type = Arguments.FirstOrDefault(a => a.Name == "Type").Value ?? string.Empty,
-                    Name = Arguments.FirstOrDefault(a => a.Name == "Name").Value ?? string.Empty,
-                    Properties = props
-                };
+                    var argName = arg.NameEquals?.Name.Identifier.ValueText ?? "0"; // Positional argument
+                    var value = model.GetConstantValue(arg.Expression);
+                    dslAttribute.Arguments[argName] = value.HasValue ? value.Value?.ToString() ?? string.Empty : arg.Expression.ToString();
+                }
+            }
+            // Handle constructor arguments not having NameEquals
+            if (dslAttribute.Arguments.ContainsKey("0") && attributeName == "EventSource")
+            {
+                dslAttribute.Arguments["EventUrn"] = dslAttribute.Arguments["0"];
+                dslAttribute.Arguments.Remove("0");
+            }
+            if (dslAttribute.Arguments.ContainsKey("0") && attributeName == "FunctionHandler")
+            {
+                dslAttribute.Arguments["ServiceName"] = dslAttribute.Arguments["0"];
+                dslAttribute.Arguments.Remove("0");
             }
 
-            public HookDefinition AsHook()
+
+            return dslAttribute;
+        }
+
+        /// <summary>
+        /// Gets all 3SC DSL attributes from a member.
+        /// </summary>
+        private IEnumerable<DslAttributeDefinition> GetAllDslAttributes(MemberDeclarationSyntax member, SemanticModel model)
+        {
+            var dslAttributeNames = new HashSet<string> { "EventSource", "DeploymentGroup", "Requires", "RequiresLogger" };
+            var attributes = new List<DslAttributeDefinition>();
+
+            foreach (var name in dslAttributeNames)
             {
-                return new HookDefinition
+                var attr = GetDslAttribute(member, model, name);
+                if (attr != null)
                 {
-                    HookType = this.Name,
-                    HandlerClassFullName = Arguments.FirstOrDefault(a => a.Name == "Handler" || a.Name == "Contract").Value ?? string.Empty,
-                    HandlerMethodName = Arguments.FirstOrDefault(a => a.Name == "Method").Value ?? string.Empty,
-                    LogAction = Arguments.FirstOrDefault(a => a.Name == "Action").Value,
-                    TraceVariableName = Arguments.FirstOrDefault(a => a.Name == "Variable").Value
-                };
+                    attributes.Add(attr);
+                }
             }
+            return attributes;
         }
     }
 }

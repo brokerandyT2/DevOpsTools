@@ -3,251 +3,170 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
 using x3squaredcircles.datalink.container.Models;
 using x3squaredcircles.datalink.container.Services;
-using x3squaredcircles.DataLink.Container.Weavers;
 
-namespace x3squaredcircles.datalink.container.Weavers
+namespace x3squaredcircles.DataLink.Container.Weavers
 {
-    /// <summary>
-    /// Implements ILanguageWeaver for generating a Go Azure Functions project.
-    /// </summary>
-    public class GoAzureFunctionsWeaver : ILanguageWeaver
+    public class GoAzureFunctionsWeaver : GoWeaverBase
     {
-        private readonly IAppLogger _logger;
-        private readonly ServiceBlueprint _blueprint;
-
         public GoAzureFunctionsWeaver(IAppLogger logger, ServiceBlueprint blueprint)
-        {
-            _logger = logger;
-            _blueprint = blueprint;
-        }
+            : base(logger, blueprint) { }
 
-        public async Task GenerateProjectFileAsync(string projectPath, string logicSourcePath)
+        public override async Task GenerateProjectFileAsync(string projectPath, string logicSourcePath)
         {
-            // For Go, the primary project file is go.mod.
             var moduleName = _blueprint.ServiceName.ToLowerInvariant();
             var goModContent = $@"
 module {moduleName}
 
 go 1.21
 
-require (
-    github.com/Azure/azure-functions-go-worker v1.3.0
-)
+// It is expected that the developer's go.mod file includes this dependency
+// require github.com/dev-container/azure-functions-go-worker v1.3.0
 ";
-            var filePath = Path.Combine(projectPath, "go.mod");
-            await File.WriteAllTextAsync(filePath, goModContent.Trim());
-            _logger.LogDebug($"Generated go.mod file: {filePath}");
+            await File.WriteAllTextAsync(Path.Combine(projectPath, "go.mod"), goModContent.Trim());
+
+            var destLogicPath = Path.Combine(projectPath, "business_logic");
+            CopyDirectory(logicSourcePath, destLogicPath);
         }
 
-        public Task GenerateStartupFileAsync(string projectPath)
+        public override Task GenerateStartupFileAsync(string projectPath)
         {
-            // Go on Azure Functions uses a simple main.go file, which is the startup and function handler.
-            _logger.LogDebug("Go Azure Functions startup logic will be generated in the handler file.");
+            // The main.go file serves as the startup/dispatcher for all functions.
             return Task.CompletedTask;
         }
 
-        public async Task GeneratePlatformFilesAsync(string projectPath)
+        public override async Task GeneratePlatformFilesAsync(string projectPath)
         {
-            var hostJsonContent = @"{
-  ""version"": ""2.0"",
-  ""logging"": {
-    ""logLevel"": {
-      ""default"": ""Information""
-    }
-  },
-  ""extensionBundle"": {
-    ""id"": ""Microsoft.Azure.Functions.ExtensionBundle"",
-    ""version"": ""[4.*, 5.0.0)""
-  }
-}";
+            var hostJsonContent = @"{""version"": ""2.0"", ""logging"": {""logLevel"": {""default"": ""Information""}}, ""customHandler"": {""description"": {""defaultExecutablePath"": ""handler"", ""workingDirectory"": """", ""arguments"": []}, ""enableForwardingHttpRequest"": true}, ""extensionBundle"": {""id"": ""Microsoft.Azure.Functions.ExtensionBundle"", ""version"": ""[4.*, 5.0.0)""}}";
             await File.WriteAllTextAsync(Path.Combine(projectPath, "host.json"), hostJsonContent.Trim());
 
-            var settingsJsonContent = @"{
-  ""IsEncrypted"": false,
-  ""Values"": {
-    ""AzureWebJobsStorage"": ""UseDevelopmentStorage=true"",
-    ""FUNCTIONS_WORKER_RUNTIME"": ""custom"",
-    ""FUNCTIONS_WORKER_EXECUTABLE_PATH"": ""./handler""
-  }
-}";
+            var settingsJsonContent = @"{""IsEncrypted"": false, ""Values"": {""AzureWebJobsStorage"": ""UseDevelopmentStorage=true"", ""FUNCTIONS_WORKER_RUNTIME"": ""custom""}}";
             await File.WriteAllTextAsync(Path.Combine(projectPath, "local.settings.json"), settingsJsonContent.Trim());
-            _logger.LogDebug($"Generated host.json and local.settings.json at: {projectPath}");
-        }
-
-        public async Task GenerateFunctionFileAsync(TriggerMethod triggerMethod, string projectPath)
-        {
-            // For Go on Azure Functions, each function is a separate directory containing a function.json
-            var functionName = triggerMethod.MethodName;
-            var functionPath = Path.Combine(projectPath, functionName);
-            Directory.CreateDirectory(functionPath);
-
-            var payload = triggerMethod.Parameters.First(p => p.IsPayload);
-            var (bindingType, bindingDirection, bindingName, bindingProperties) = GetBindingDetails(triggerMethod.Triggers.First());
-
-            // Generate function.json
-            var functionJsonContent = $@"
-{{
-  ""scriptFile"": ""../handler"",
-  ""bindings"": [
-    {{
-      ""authLevel"": ""function"",
-      ""type"": ""{bindingType}"",
-      ""direction"": ""{bindingDirection}"",
-      ""name"": ""{bindingName}""
-      {bindingProperties}
-    }},
-    {{
-      ""type"": ""http"",
-      ""direction"": ""out"",
-      ""name"": ""$return""
-    }}
-  ]
-}}
-";
-            await File.WriteAllTextAsync(Path.Combine(functionPath, "function.json"), functionJsonContent.Trim());
-
-            // Generate or append to the main handler.go file
-            var handlerFilePath = Path.Combine(projectPath, "handler.go");
-            await GenerateGoHandlerFileAsync(handlerFilePath, triggerMethod, payload);
-        }
-
-        private async Task GenerateGoHandlerFileAsync(string filePath, TriggerMethod triggerMethod, ParameterDefinition payload)
-        {
-            var handlerClassName = _blueprint.HandlerClassFullName.Split('.').Last(); // Assuming Go struct name matches class name
-
-            var handlerContent = new StringBuilder();
-
-            // Create the file with package and imports only if it doesn't exist
-            if (!File.Exists(filePath))
-            {
-                handlerContent.AppendLine($"// Auto-generated by 3SC DataLink at {DateTime.UtcNow:O}");
-                handlerContent.AppendLine($"// Source Version: {_blueprint.Metadata.SourceVersionTag}");
-                handlerContent.AppendLine();
-                handlerContent.AppendLine("package main");
-                handlerContent.AppendLine();
-                handlerContent.AppendLine("import (");
-                handlerContent.AppendLine("    \"context\"");
-                handlerContent.AppendLine("    \"encoding/json\"");
-                handlerContent.AppendLine("    \"log\"");
-                handlerContent.AppendLine("    \"net/http\"");
-                handlerContent.AppendLine();
-                handlerContent.AppendLine("    \"github.com/Azure/azure-functions-go-worker/dispatcher\"");
-                handlerContent.AppendLine("    \"github.com/Azure/azure-functions-go-worker/rpc\"");
-                handlerContent.AppendLine(")");
-                handlerContent.AppendLine();
-                handlerContent.AppendLine("func main() {");
-                handlerContent.AppendLine("    dispatcher.Initialize(nil)");
-                handlerContent.AppendLine("}");
-            }
-
-            handlerContent.AppendLine();
-            handlerContent.AppendLine($"// {triggerMethod.MethodName} is the entry point for the '{triggerMethod.MethodName}' function.");
-            handlerContent.AppendLine($"func {triggerMethod.MethodName}(ctx context.Context, req *rpc.HttpRequest) *rpc.TypedData {{");
-            handlerContent.AppendLine($"    log.Printf(\"Go HTTP trigger for function {triggerMethod.MethodName} processed a request.\")");
-            handlerContent.AppendLine();
-            handlerContent.AppendLine($"    var payload {payload.TypeFullName} // Assuming DTO is in the same package");
-            handlerContent.AppendLine("    if err := json.Unmarshal([]byte(req.Body.GetString()), &payload); err != nil {");
-            handlerContent.AppendLine("        return &rpc.TypedData{ String: \"Invalid request body\" }");
-            handlerContent.AppendLine("    }");
-            handlerContent.AppendLine();
-            handlerContent.AppendLine("    // In a real application, a DI framework would provide the handler instance.");
-            handlerContent.AppendLine($"    // handler := businesslogic.New{handlerClassName}()");
-            handlerContent.AppendLine("    // err := handler.{triggerMethod.MethodName}(payload)");
-            handlerContent.AppendLine("    // if err != nil { ... }");
-            handlerContent.AppendLine();
-            handlerContent.AppendLine("    return &rpc.TypedData{ String: \"Request processed successfully.\" }");
-            handlerContent.AppendLine("}");
-
-            await File.AppendAllTextAsync(filePath, handlerContent.ToString());
-        }
-
-        public async Task AssembleTestHarnessAsync(string testSourcePath, string testProjectPath, string mainProjectPath)
-        {
-            _logger.LogInfo("Assembling Go test harness project...");
-            var testsPath = Path.Combine(testProjectPath, "tests");
-            Directory.CreateDirectory(testsPath);
-
-            var handlerClassNameShort = _blueprint.HandlerClassFullName.Split('.').Last();
-            var relevantTestFiles = Directory.GetFiles(testSourcePath, $"*{ToSnakeCase(handlerClassNameShort)}_test.go", SearchOption.AllDirectories);
-            foreach (var testFile in relevantTestFiles)
-            {
-                File.Copy(testFile, Path.Combine(testsPath, Path.GetFileName(testFile)), true);
-            }
 
             foreach (var triggerMethod in _blueprint.TriggerMethods)
             {
-                await GenerateSingleTestHarnessFileAsync(triggerMethod, testsPath);
+                var functionPath = Path.Combine(projectPath, triggerMethod.MethodName);
+                Directory.CreateDirectory(functionPath);
+
+                var eventSource = triggerMethod.DslAttributes.First(a => a.Name == "EventSource");
+                var bindings = ParseUrnForFunctionJson(eventSource.Arguments["EventUrn"]);
+
+                var functionJson = JsonSerializer.Serialize(new { bindings }, new JsonSerializerOptions { WriteIndented = true });
+                await File.WriteAllTextAsync(Path.Combine(functionPath, "function.json"), functionJson);
             }
         }
 
-        private async Task GenerateSingleTestHarnessFileAsync(TriggerMethod triggerMethod, string testPackagePath)
+        public override async Task GenerateFunctionFileAsync(TriggerMethod triggerMethod, string projectPath)
+        {
+            // For Azure Go Custom Handlers, we create a single main.go that acts as a router.
+            var mainGoFilePath = Path.Combine(projectPath, "main.go");
+            var handlerClassName = _blueprint.HandlerClassFullName.Split('.').Last();
+
+            var sb = new StringBuilder();
+            if (!File.Exists(mainGoFilePath))
+            {
+                sb.AppendLine("package main");
+                sb.AppendLine();
+                sb.AppendLine("import (");
+                sb.AppendLine("    \"encoding/json\"");
+                sb.AppendLine("    \"fmt\"");
+                sb.AppendLine("    \"io/ioutil\"");
+                sb.AppendLine("    \"log\"");
+                sb.AppendLine("    \"net/http\"");
+                sb.AppendLine("    \"os\"");
+                sb.AppendLine($"    logic \"{_blueprint.ServiceName.ToLowerInvariant()}/business_logic\"");
+                sb.AppendLine(")");
+                sb.AppendLine();
+                sb.AppendLine($"var handlerInstance = logic.New{handlerClassName}()");
+                sb.AppendLine();
+                sb.AppendLine("func main() {");
+                sb.AppendLine("    http.HandleFunc(\"/\", defaultHandler)");
+            }
+
+            var payloadParam = triggerMethod.Parameters.FirstOrDefault(p => !p.IsBusinessLogicDependency);
+            if (payloadParam == null) throw new DataLinkException(ExitCode.CodeGenerationFailed, "GO_PAYLOAD_NOT_FOUND", $"Method '{triggerMethod.MethodName}' requires a payload parameter.");
+
+            // Add a handler for this specific function
+            sb.AppendLine($"    http.HandleFunc(\"/{triggerMethod.MethodName}\", {ToCamelCase(triggerMethod.MethodName)}Handler)");
+
+            // Append a closing brace and ListenAndServe later
+            File.AppendAllText(mainGoFilePath, sb.ToString());
+
+            // Generate the handler implementation
+            var handlerContent = $@"
+func {ToCamelCase(triggerMethod.MethodName)}Handler(w http.ResponseWriter, r *http.Request) {{
+    var payload logic.{payloadParam.TypeFullName}
+    body, _ := ioutil.ReadAll(r.Body)
+    json.Unmarshal(body, &payload)
+    
+    result, err := handlerInstance.{triggerMethod.MethodName}(payload)
+    if err != nil {{
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }}
+
+    responseBody, _ := json.Marshal(result)
+    fmt.Fprint(w, string(responseBody))
+}}";
+            await File.AppendAllTextAsync(mainGoFilePath, handlerContent);
+        }
+
+        protected override async Task GenerateSingleTestHarnessFileAsync(TriggerMethod triggerMethod, string testPackagePath)
         {
             var harnessFileName = $"{ToSnakeCase(triggerMethod.MethodName)}_harness_test.go";
-
-            var harnessContent = $@"
-package main_test
-
-import (
-    ""context""
-    ""testing""
-    ""github.com/stretchr/testify/assert""
-    // ""{_blueprint.ServiceName}/mocks"" // Assuming mock package
-    // main ""{_blueprint.ServiceName}"" // Assuming main package
-)
-
-// Auto-generated by 3SC DataLink. This test skeleton is designed to fail by default.
-func Test{triggerMethod.MethodName}_Harness(t *testing.T) {{
-    t.Fatal(""Test not yet implemented. Please configure mock setups and add assertions."")
-
-    /* --- EXAMPLE IMPLEMENTATION ---
-    // Arrange
-    // mockCtrl := gomock.NewController(t)
-    // defer mockCtrl.Finish()
-    // mockHandler := mocks.NewMockMyHandler(mockCtrl)
-
-    // // This requires a way to inject the mock into the handler, typically via an interface
-    // main.SetHandler(mockHandler)
-
-    // mockHandler.EXPECT().{triggerMethod.MethodName}(gomock.Any()).Return(nil)
-
-    // req := &rpc.HttpRequest{{
-    //     Body: &rpc.TypedData{{ String: `{{""key"":""value""}}` }},
-    // }}
-
-    // // Act
-    // result := main.{triggerMethod.MethodName}(context.Background(), req)
-
-    // // Assert
-    // assert.NotNil(t, result)
-    // assert.Equal(t, ""Request processed successfully"", result.GetString_())
-    */
-}}";
-            await File.WriteAllTextAsync(Path.Combine(testPackagePath, harnessFileName), harnessContent.Trim());
+            await File.WriteAllTextAsync(Path.Combine(testPackagePath, harnessFileName), "// TODO: Implement Go Azure test harness");
         }
 
-        private (string Type, string Direction, string Name, string Properties) GetBindingDetails(TriggerDefinition trigger)
+        // Finalize the main.go file after all handlers have been added.
+        public static async Task FinalizeMainGoFile(string mainGoFilePath)
         {
-            switch (trigger.Type)
+            if (File.Exists(mainGoFilePath))
             {
-                case "Http":
-                    var route = trigger.Name.TrimStart('/');
-                    var methods = trigger.Properties.GetValueOrDefault("Method", "post")?.ToLowerInvariant();
-                    var properties = $@",
-      ""route"": ""{route}"",
-      ""methods"": [ ""{methods}"" ]";
-                    return ("httpTrigger", "in", "req", properties);
-                default:
-                    throw new NotSupportedException($"Trigger type '{trigger.Type}' is not supported for Go Azure Functions generation.");
+                var finalContent = @"
+    customHandlerPort, exists := os.LookupEnv(""FUNCTIONS_CUSTOMHANDLER_PORT"")
+    if !exists {
+        customHandlerPort = ""8080""
+    }
+    log.Fatal(http.ListenAndServe(fmt.Sprintf("":%s"", customHandlerPort), nil))
+}
+
+func defaultHandler(w http.ResponseWriter, r *http.Request) {
+    fmt.Fprint(w, ""Default handler: function not found."")
+}
+";
+                await File.AppendAllTextAsync(mainGoFilePath, finalContent);
             }
         }
 
-        private string ToSnakeCase(string input)
+        private List<object> ParseUrnForFunctionJson(string urn)
         {
-            if (string.IsNullOrWhiteSpace(input)) return "unknown";
-            return string.Concat(input.Select((x, i) => i > 0 && char.IsUpper(x) ? "_" + x.ToString() : x.ToString())).ToLower();
+            var parts = urn.Split(':');
+            var bindings = new List<object>();
+            if (parts.Length < 4) return bindings;
+
+            var service = parts[1].ToLowerInvariant();
+            var resource = parts[2];
+            var action = string.Join(":", parts.Skip(3));
+
+            switch (service)
+            {
+                case "apigateway":
+                    bindings.Add(new
+                    {
+                        authLevel = "anonymous",
+                        type = "httpTrigger",
+                        direction = "in",
+                        name = "req",
+                        methods = new[] { action.ToLowerInvariant() },
+                        route = resource.TrimStart('/')
+                    });
+                    bindings.Add(new { type = "http", direction = "out", name = "res" });
+                    break;
+            }
+            return bindings;
         }
     }
 }

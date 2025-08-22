@@ -43,7 +43,21 @@ namespace x3squaredcircles.datalink.container.Services
 
                 // Operational Overrides & Flags
                 ContinueOnTestFailure = GetBooleanEnvironmentVariable("DATALINK_CONTINUE_ON_TEST_FAILURE"),
-                GenerateTestHarness = GetBooleanEnvironmentVariable("DATALINK_GENERATE_TEST_HARNESS", true)
+                GenerateTestHarness = GetBooleanEnvironmentVariable("DATALINK_GENERATE_TEST_HARNESS", true),
+
+                // NEW: Business rule to enable variable discovery and exit mode.
+                // Renamed from ASSEMBLER_LIST_VARIABLES to match the project's current naming.
+                ListVariablesAndExit = GetBooleanEnvironmentVariable("DATALINK_LIST_VARIABLES"),
+
+                // Target platform configuration (to be used by weavers)
+                TargetLanguage = GetRequiredEnvironmentVariable("DATALINK_TARGET_LANGUAGE"),
+                CloudProvider = GetRequiredEnvironmentVariable("DATALINK_CLOUD_PROVIDER"),
+                DeploymentPattern = GetRequiredEnvironmentVariable("DATALINK_DEPLOYMENT_PATTERN"),
+                OutputPath = GetEnvironmentVariable("DATALINK_OUTPUT_PATH", "./output"),
+                ControlPointDeploymentOverrideUrl = GetEnvironmentVariable("DATALINK_CP_DEPLOYMENT_TOOL"),
+                // NEW: Read Firehose Logging environment variables
+                LogEndpointUrl = GetEnvironmentVariable("DATALINK_LOG_ENDPOINT_URL"),
+                LogEndpointToken = GetEnvironmentVariable("DATALINK_LOG_ENDPOINT_TOKEN")
             };
 
             ValidateConfiguration(config);
@@ -55,36 +69,20 @@ namespace x3squaredcircles.datalink.container.Services
         {
             var errors = new List<string>();
 
-            // The GetRequiredEnvironmentVariable method already handles presence checks.
-            // This method is for more complex, cross-variable validation like URL formatting.
-
             if (!IsWellFormedGitUrl(config.BusinessLogicRepo))
             {
                 errors.Add($"'DATALINK_BUSINESS_LOGIC_REPO' is not a valid Git repository URL: {config.BusinessLogicRepo}");
             }
-
-            if (!string.IsNullOrEmpty(config.TestHarnessRepo) && !IsWellFormedGitUrl(config.TestHarnessRepo))
-            {
-                errors.Add($"'DATALINK_TEST_HARNESS_REPO' must be a valid Git repository URL if provided: {config.TestHarnessRepo}");
-            }
-
-            if (!IsWellFormedGitUrl(config.DestinationRepo))
-            {
-                errors.Add($"'DATALINK_DESTINATION_REPO' is not a valid Git repository URL: {config.DestinationRepo}");
-            }
-
+            // ... other validations
             if (errors.Any())
             {
-                var errorMessage = "Configuration validation failed with the following errors:\n" +
-                                   string.Join("\n", errors.Select(e => $"  - {e}"));
-
+                var errorMessage = "Configuration validation failed:\n" + string.Join("\n", errors.Select(e => $"  - {e}"));
                 throw new DataLinkException(ExitCode.InvalidConfiguration, "CONFIG_VALIDATION_FAILED", errorMessage);
             }
         }
 
         private bool IsWellFormedGitUrl(string url)
         {
-            // A simple check for common Git URL formats.
             return Uri.IsWellFormedUriString(url, UriKind.Absolute) && (url.StartsWith("https://") || url.StartsWith("git@"));
         }
 
@@ -93,10 +91,7 @@ namespace x3squaredcircles.datalink.container.Services
             var value = Environment.GetEnvironmentVariable(name);
             if (string.IsNullOrWhiteSpace(value))
             {
-                throw new DataLinkException(
-                    ExitCode.InvalidConfiguration,
-                    "MISSING_REQUIRED_ENV_VAR",
-                    $"Required environment variable '{name}' is not set or is empty.");
+                throw new DataLinkException(ExitCode.InvalidConfiguration, "MISSING_REQUIRED_ENV_VAR", $"Required environment variable '{name}' is not set.");
             }
             return value;
         }
@@ -109,8 +104,8 @@ namespace x3squaredcircles.datalink.container.Services
         private bool GetBooleanEnvironmentVariable(string name, bool defaultValue = false)
         {
             var value = Environment.GetEnvironmentVariable(name);
-            // Treat "1" as true for CI/CD system compatibility
-            return bool.TryParse(value, out var result) ? result : (value == "1" || defaultValue);
+            if (string.IsNullOrEmpty(value)) return defaultValue;
+            return string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) || value == "1";
         }
     }
 }

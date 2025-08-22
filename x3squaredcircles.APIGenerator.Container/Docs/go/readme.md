@@ -1,154 +1,150 @@
-﻿# 3SC Conduit: Go Developer Guide
+﻿# 3SC API Assembler: Go Quick Start & Examples
 
-This guide provides Go-specific examples for using `3SC Conduit` comment directives to define and generate event-driven services.
+This guide provides practical examples of how to use the 3SC Assembler comment directives in a Go business logic project.
 
-Go does not have annotations or decorators. Instead, Conduit parses structured comments placed directly above your types and functions. To get started, download the `datalink.go` helper file from the running Conduit container at `/code/go`.
+## 1. Getting Started
 
-## 1. Defining a Service with `// @DataConsumer`
+1. **Reference the DSL:** Keep the `three_sc_dsl.go` file handy as a reference for the correct syntax.
+2. **Annotate Your Code:** Add comment directives (`// @Directive ...`) on the line immediately preceding your structs and methods to define your services and function entry points.
 
-Mark a `struct` that will contain your business logic with the `@DataConsumer` comment directive. This is the top-level entry point for the tool's analyzer.
+## 2. Core Concepts with Examples
 
-```go
-package handlers
+### `@FunctionHandler`
 
-// @DataConsumer serviceName="order-processing-service"
-type OrderProcessor struct {
-    // ... dependencies would be defined here
-    // DB *sql.DB
-}
-```
-
-## 2. Defining a Trigger with `// @Trigger`
-
-Place a `@Trigger` comment directive directly above a public method of your DataConsumer struct to expose it as a service entry point. The first parameter of the method is always the data contract (DTO).
+This directive marks a struct as a container for function entry points. The Assembler will scan any struct preceded by this comment.
 
 ```go
 package handlers
 
-import "my-project/dtos"
+// @FunctionHandler
+type OrderProcessingHandler struct {
+    // ... dependencies like database connections go here
+}
+```
 
-// @DataConsumer
-type OrderProcessor struct{}
+### `@DeploymentGroup`
 
-// @Trigger type="AwsSqsQueue" name="new-orders"
-func (p *OrderProcessor) HandleNewOrder(order dtos.OrderEvent, db *sql.DB) error {
-    // Your business logic here...
-    // _, err := db.Exec(...)
+This directive defines a deployable microservice. It groups related functions together and can be applied to a struct or a single method.
+
+```go
+package handlers
+
+// @DeploymentGroup serviceName="OrderServices" version="v2.1"
+// @FunctionHandler
+type OrderProcessingHandler struct {
+    OrderRepo repositories.IOrderRepository
+}
+
+// This method is part of the "OrderServices" v2.1 deployment group.
+// @EventSource eventUrn="aws:sqs:{newOrdersQueue}:MessageReceived"
+func (h *OrderProcessingHandler) ProcessNewOrder(sqsEvent events.SQSEvent) error {
+    // ... logic ...
     return nil
 }
 
-// @Trigger type="Http" name="/orders/manual-entry"
-func (p *OrderProcessor) HandleManualOrder(order dtos.OrderEvent, log *log.Logger) error {
-    log.Println("Manual order received.")
-    // ...
+// This method OVERRIDES the struct-level group.
+// @DeploymentGroup serviceName="InternalTools" version="v1"
+// @EventSource eventUrn="aws:apigateway:proxy:/tools/reprocess-order/{id}:POST"
+func (h *OrderProcessingHandler) ReprocessOrder(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+    // ... logic ...
+    return events.APIGatewayProxyResponse{StatusCode: 200}, nil
+}
+```
+
+### `@EventSource`
+
+This is the primary directive. It marks a method as a function entry point and defines its trigger with a URN. Placeholders like `{customerUploadsBucket}` are replaced by pipeline variables.
+
+#### AWS S3 PUT Event:
+
+```go
+// @EventSource eventUrn="aws:s3:{customerUploadsBucket}:ObjectCreated:Put"
+func (h *FileHandler) HandleNewUpload(s3Event events.S3Event) error {
+    // ... logic to process the new file ...
     return nil
 }
 ```
 
-## 3. Requiring a Pre-Processing Gate with `// @Requires`
-
-Use `@Requires` to enforce a gatekeeper, like an authentication check, before your main logic is executed. The handler should be a reference to a function that returns a boolean.
+#### Azure HTTP GET Event:
 
 ```go
-// In your shared hooks package (e.g., hooks/auth.go)
+// @EventSource eventUrn="azure:apigateway:proxy:/products/{id}:GET"
+func (h *ProductHandler) GetProductByID(req messages.HttpRequest) (*messages.HttpResponse, error) {
+    // ... logic to fetch a product ...
+    return &messages.HttpResponse{Body: "product data"}, nil
+}
+```
+
+#### GCP Pub/Sub Event:
+
+```go
+// @EventSource eventUrn="gcp:pubsub:{newProductsTopic}:MessagePublished"
+func (h *ProductHandler) OnNewProductPublished(ctx context.Context, m event.Message) error {
+    // ... logic to handle the Pub/Sub message ...
+    return nil
+}
+```
+
+## 3. Weaving Cross-Cutting Concerns
+
+### `@Requires`
+
+Use this to inject a pre-processing gate. The specified handler function should have a signature like `func(payload interface{}) (bool, error)`. If it returns `false`, the main business logic is not executed.
+
+```go
+// In a separate "hooks/security.go" package...
 package hooks
 
-func ValidateRequest(req events.APIGatewayProxyRequest) (bool, error) {
-    // ... check JWT ...
-    return true, nil
+func ValidateJwt(req events.APIGatewayProxyRequest) (bool, error) {
+    // logic to validate the JWT from the request header
+    log.Println("Validating JWT...")
+    return true, nil // or false, nil
 }
 
-// In your business logic
-package handlers
+// In your Function Handler...
+// @FunctionHandler
+type AdminPanelHandler struct{}
 
-import "my-project/hooks"
-
-// @DataConsumer
-type AdminService struct{}
-
-// @Trigger type="Http" name="/admin/run-job"
-// @Requires handler="hooks.ValidateRequest"
-func (s *AdminService) RunAdminJob(payload dtos.AdminJobPayload) error {
-    // This code only runs if hooks.ValidateRequest returns true.
-    return nil
+// @Requires handler="github.com/my-org/project/hooks.ValidateJwt"
+// @EventSource eventUrn="aws:apigateway:proxy:/admin/dashboard:GET"
+func (h *AdminPanelHandler) GetDashboard(req events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+    // This code only runs if ValidateJwt returns true.
+    return events.APIGatewayProxyResponse{StatusCode: 200}, nil
 }
 ```
 
-**Note**: The handler is specified as a string "packageName.FunctionName".
+### `@RequiresLogger`
 
-## 4. Requiring Logging with `// @RequiresLogger`
+Use this to inject observability and create an audit trail.
 
-Use `@RequiresLogger` to declaratively add observability. The tool will automatically wrap your trigger method in a try/catch-equivalent block (using Go's panic/recover) and call your specified logger function.
-
-The action specifies when to log:
-- **OnInbound**: Logs the incoming DTO at the start.
-- **OnError**: Logs the error if one occurs.
-- **OnOutbound**: Logs the return value of your method upon success.
+- **action="OnInbound":** Logs the request payload before your business logic runs.
+- **action="OnError":** Logs any exception that occurs during the pipeline.
 
 ```go
-// In your shared logging library (e.g., loggers/splunk.go)
-package loggers
+// In a separate "hooks/auditing.go" package...
+package hooks
 
-func LogEvent(payload interface{}, err error) {
-    // Logic to send data to Splunk
-}
-
-// In your business logic
-package handlers
-
-import "my-project/loggers"
-
-// @DataConsumer
-type OrderProcessor struct{}
-
-// @Trigger type="Http" name="/orders"
-// @RequiresLogger handler="loggers.LogEvent" action="OnInbound"
-// @RequiresLogger handler="loggers.LogEvent" action="OnError"
-func (p *OrderProcessor) HandleNewOrder(order dtos.OrderEvent) error {
-    // ... your logic ...
-    return nil
-}
-```
-
-## 5. Trace Logging with `// @RequiresResultsLogger`
-
-Use `@RequiresResultsLogger` to get deep insight into your method's execution by logging the state of local variables. This feature is more limited in compiled languages like Go.
-
-```go
-// @DataConsumer
-type ComplexWorkflow struct{}
-
-// @Trigger type="Http" name="/workflows/start"
-// @RequiresResultsLogger handler="loggers.LogEvent" variable="validated"
-// @RequiresResultsLogger handler="loggers.LogEvent" variable="enriched"
-func (w *ComplexWorkflow) StartWorkflow(payload dtos.InitialPayload) error {
-    validated, err := w.validate(payload)
-    // The tool will inject a call to loggers.LogEvent(validated, nil) here.
-    if err != nil {
-        return err
-    }
-
-    enriched, err := w.enrich(validated)
-    // The tool will inject a call to loggers.LogEvent(enriched, nil) here.
-    if err != nil {
-        return err
-    }
-
-    w.save(enriched)
+func LogRequest(payload interface{}) error {
+    // logic to serialize and log the incoming payload
+    log.Printf("AUDIT - Inbound Payload: %+v", payload)
     return nil
 }
 
-func (w *ComplexWorkflow) validate(payload dtos.InitialPayload) (dtos.ValidatedPayload, error) {
-    // Validation logic
-    return dtos.ValidatedPayload{}, nil
+func LogFailure(err error) error {
+    // logic to log critical failure details
+    log.Printf("AUDIT - Critical Failure: %v", err)
+    return nil
 }
 
-func (w *ComplexWorkflow) enrich(payload dtos.ValidatedPayload) (dtos.EnrichedPayload, error) {
-    // Enrichment logic
-    return dtos.EnrichedPayload{}, nil
-}
+// In your Function Handler...
+// @FunctionHandler
+type PaymentProcessingHandler struct{}
 
-func (w *ComplexWorkflow) save(payload dtos.EnrichedPayload) {
-    // Save logic
+// @RequiresLogger handler="github.com/my-org/project/hooks.LogRequest" action="OnInbound"
+// @RequiresLogger handler="github.com/my-org/project/hooks.LogFailure" action="OnError"
+// @EventSource eventUrn="aws:sqs:{paymentQueue}:MessageReceived"
+func (h *PaymentProcessingHandler) ProcessPayment(message events.SQSMessage) error {
+    // Business logic that might return an error...
+    return fmt.Errorf("payment gateway timed out")
 }
 ```

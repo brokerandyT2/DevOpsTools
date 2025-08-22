@@ -1,142 +1,139 @@
-﻿# 3SC Conduit: Java Developer Guide
+﻿# 3SC API Assembler: Java Quick Start & Examples
 
-This guide provides Java-specific examples for using the `3SC Conduit` annotations to define and generate event-driven services.
+This guide provides practical examples of how to use the 3SC Assembler DSL annotations in a Java business logic project.
 
-To get started, add the `3SC.Conduit.Annotations.jar` package as a dependency or download the annotation source code from the running Conduit container at `/code/java`.
+## 1. Getting Started
 
-## 1. Defining a Service with `@DataConsumer`
+1. **Include the DSL:** Add the `Dsl.java` file (or the compiled `.jar`) to your business logic project. Ensure the package is `com.threese.assembler.annotations`.
+2. **Annotate Your Code:** Add the annotations to your handler classes and methods to define your services and function entry points.
 
-Mark any class that will contain business logic with the `@DataConsumer` annotation. This is the top-level entry point for the tool's analyzer.
+## 2. Core Concepts with Examples
+
+### `@FunctionHandler`
+
+This annotation marks a class as a container for function entry points. The Assembler will scan any class annotated with `@FunctionHandler`.
 
 ```java
-import com.threese.conduit.annotations.*;
+import com.threese.assembler.annotations.Dsl.*;
 
-@DataConsumer(serviceName = "order-processing-service")
-public class OrderProcessor {
-    // ... your trigger methods go here
+@FunctionHandler
+public class OrderProcessingHandler {
+    // ... methods go here
 }
 ```
 
-## 2. Defining a Trigger with `@Trigger`
+### `@DeploymentGroup`
 
-Decorate any public method inside your `@DataConsumer` class with a `@Trigger` annotation to expose it as a service entry point. The first parameter of the method is always the data contract (POJO).
-
-The TriggerType enum provides a list of supported event sources.
+This annotation defines a deployable microservice. It groups related functions together and can be applied at the class or method level.
 
 ```java
-@DataConsumer
-public class OrderProcessor {
+@FunctionHandler
+@DeploymentGroup(serviceName = "OrderServices", version = "v2.1")
+public class OrderProcessingHandler {
 
-    // This method is triggered by a message on an AWS SQS Queue.
-    @Trigger(type = TriggerType.AWS_SQS_QUEUE, name = "new-orders")
-    public void handleNewOrder(OrderEvent order, Connection db) {
-        // Your business logic here...
-        // db.execute("...");
+    // This method is part of the "OrderServices" v2.1 deployment group.
+    @EventSource(eventUrn = "aws:sqs:{newOrdersQueue}:MessageReceived")
+    public void processNewOrder(SQSEvent sqsEvent, IOrderRepository repo) {
+        // ... logic ...
     }
 
-    // This method is triggered by an HTTP POST request.
-    @Trigger(type = TriggerType.HTTP, name = "orders/manual-entry")
-    public void handleManualOrder(OrderEvent order, Logger log) {
-        log.info("Manual order received.");
-        // ...
-    }
-}
-```
-
-## 3. Requiring a Pre-Processing Gate with `@Requires`
-
-Use `@Requires` to enforce a gatekeeper, like an authentication check, before your main logic is executed. The tool will generate the code to call your specified handler.
-
-The handler method must return a `boolean`. If it returns `false`, execution is halted.
-
-```java
-// In your shared hooks library
-public class MyAuthHooks {
-    public boolean validate(APIGatewayProxyRequestEvent request) { /* ... check JWT ... */ }
-}
-
-// In your business logic
-@DataConsumer
-public class AdminService {
-
-    @Trigger(type = TriggerType.HTTP, name = "admin/run-job")
-    @Requires(
-        handler = MyAuthHooks.class,
-        method = "validate"
-    )
-    public void runAdminJob(AdminJobPayload payload) {
-        // This code only runs if MyAuthHooks.validate returns true.
+    // This method OVERRIDES the class-level group.
+    @DeploymentGroup(serviceName = "InternalTools", version = "v1")
+    @EventSource(eventUrn = "aws:apigateway:proxy:/tools/reprocess-order/{id}:POST")
+    public void reprocessOrder(APIGatewayProxyRequestEvent request) {
+        // ... logic ...
     }
 }
 ```
 
-## 4. Requiring Logging with `@RequiresLogger`
+### `@EventSource`
 
-Use `@RequiresLogger` to declaratively add observability to your service. The tool will automatically wrap your trigger method in a try/catch block and call your specified logger.
+This is the primary annotation. It marks a method as a function entry point and defines its trigger with a URN. Placeholders like `{customerUploadsBucket}` are replaced by pipeline variables.
 
-The LoggingAction enum specifies when to log:
-- **ON_INBOUND**: Logs the incoming POJO at the start.
-- **ON_ERROR**: Logs the exception in the catch block.
-- **ON_OUTBOUND**: Logs the return value of your method upon success.
+#### AWS S3 PUT Event:
 
 ```java
-// In your shared logging library
-public class SplunkLogger {
-    // The tool will match the parameter type to know what to inject.
-    public void log(Object payload) { /* ... */ }
-    public void log(Exception ex) { /* ... */ }
+@EventSource(eventUrn = "aws:s3:{customerUploadsBucket}:ObjectCreated:Put")
+public void handleNewUpload(S3Event s3Event, IFileMetadataService service) {
+    // ... logic to process the new file ...
+}
+```
+
+#### Azure HTTP GET Event:
+
+```java
+@EventSource(eventUrn = "azure:apigateway:proxy:/products/{id}:GET")
+public Product getProductById(HttpRequestMessage<Optional<String>> request, String id, IProductRepository repo) {
+    // ... logic to fetch a product ...
+    return new Product();
+}
+```
+
+#### GCP Pub/Sub Event:
+
+```java
+@EventSource(eventUrn = "gcp:pubsub:{newProductsTopic}:MessagePublished")
+public void onNewProductPublished(PubSubMessage message, Context context) {
+    // ... logic to handle the Pub/Sub message ...
+}
+```
+
+## 3. Weaving Cross-Cutting Concerns
+
+### `@Requires`
+
+Use this to inject a pre-processing gate like an authentication check. The specified handler method must return a `boolean`. If it returns `false`, the main business logic is not executed.
+
+```java
+// In a separate "Hooks" project...
+public class SecurityHooks {
+    public boolean validateJwt(HttpRequestMessage<Optional<String>> request) {
+        // logic to validate the JWT from the request header
+        return true; // or false
+    }
 }
 
-// In your business logic
-@DataConsumer
-public class OrderProcessor {
+// In your Function Handler...
+@FunctionHandler
+public class AdminPanelHandler {
 
-    @Trigger(type = TriggerType.HTTP, name = "orders")
-    @RequiresLogger(
-        handler = SplunkLogger.class,
-        action = LoggingAction.ON_INBOUND
-    )
-    @RequiresLogger(
-        handler = SplunkLogger.class,
-        action = LoggingAction.ON_ERROR
-    )
-    public void handleNewOrder(OrderEvent order) {
-        // ... your logic ...
+    @Requires(handler = SecurityHooks.class, method = "validateJwt")
+    @EventSource(eventUrn = "azure:apigateway:proxy:/admin/dashboard:GET")
+    public DashboardData getDashboard(HttpRequestMessage<Optional<String>> request) {
+        // This code only runs if validateJwt returns true.
+        return new DashboardData();
     }
 }
 ```
 
-## 5. Trace Logging with `@RequiresResultsLogger`
+### `@RequiresLogger`
 
-Use `@RequiresResultsLogger` to get deep insight into your method's execution by logging the state of local variables. Note that due to Java's compiled nature, this feature relies on bytecode analysis and may have limitations compared to C#.
+Use this to inject observability and create an audit trail.
+
+- **ON_INBOUND:** Logs the request payload before your business logic runs.
+- **ON_ERROR:** Logs any exception that occurs during the pipeline.
 
 ```java
-@DataConsumer
-public class ComplexWorkflow {
-
-    @Trigger(type = TriggerType.HTTP, name = "workflows/start")
-    @RequiresResultsLogger(
-        handler = SplunkLogger.class,
-        method = "log",
-        variable = "validated"
-    )
-    @RequiresResultsLogger(
-        handler = SplunkLogger.class,
-        method = "log",
-        variable = "enriched"
-    )
-    public void startWorkflow(InitialPayload payload) {
-        ValidatedPayload validated = this.validate(payload);
-        // The tool will inject a call to SplunkLogger.log(validated) here.
-
-        EnrichedPayload enriched = this.enrich(validated);
-        // The tool will inject a call to SplunkLogger.log(enriched) here.
-
-        this.save(enriched);
+// In a separate "Logging" project...
+public class AuditLogger {
+    public void logRequest(Object payload, FunctionLogger logger) {
+        // logic to serialize and log the incoming payload
     }
 
-    private ValidatedPayload validate(InitialPayload p) { /*...*/ }
-    private EnrichedPayload enrich(ValidatedPayload p) { /*...*/ }
-    private void save(EnrichedPayload p) { /*...*/ }
+    public void logFailure(Exception ex, FunctionLogger logger) {
+        // logic to log critical failure details
+    }
+}
+
+// In your Function Handler...
+@FunctionHandler
+public class PaymentProcessingHandler {
+
+    @RequiresLogger(handler = AuditLogger.class, action = LoggingAction.ON_INBOUND)
+    @RequiresLogger(handler = AuditLogger.class, action = LoggingAction.ON_ERROR)
+    @EventSource(eventUrn = "aws:sqs:{paymentQueue}:MessageReceived")
+    public void processPayment(SQSEvent.SQSMessage message, IPaymentGateway gateway) {
+        // Business logic that might throw an exception...
+    }
 }
 ```

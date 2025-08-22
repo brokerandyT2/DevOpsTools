@@ -1,204 +1,170 @@
-﻿# 3SC Conduit: JavaScript Developer Guide
+﻿# 3SC API Assembler: JavaScript Quick Start & Examples
 
-This guide provides JavaScript-specific examples for using the `3SC Conduit` JSDoc tags to define and generate event-driven services.
+This guide provides practical examples of how to use the 3SC Assembler DSL functions in a JavaScript business logic project.
 
-JavaScript does not have native decorators or annotations. Instead, Conduit parses structured JSDoc comment blocks placed directly above your classes and methods. To get started, download the `datalink_helpers.js` file from the running Conduit container at `/code/javascript`.
+## 1. Getting Started
 
-## 1. Defining a Service with `@DataConsumer`
+1. **Include the DSL:** `require` the `three_sc_dsl.js` file into your business logic project.
+2. **Annotate Your Code:** Wrap your handler classes and methods with the DSL functions to define your services and function entry points.
 
-Mark a class that will contain your business logic with the `@DataConsumer` JSDoc tag. This is the top-level entry point for the tool's analyzer.
+## 2. Core Concepts with Examples
+
+### `FunctionHandler`
+
+This function marks a class as a container for function entry points. The Assembler will scan any class wrapped with `FunctionHandler`.
 
 ```javascript
-/**
- * @DataConsumer(serviceName = "order-processing-service")
- */
-class OrderProcessor {
-    // ... your trigger methods go here
+const { FunctionHandler } = require('./dsl/three_sc_dsl');
+
+class OrderProcessingHandler {
+    // ... methods go here
 }
-module.exports = { OrderProcessor };
+
+module.exports = { OrderProcessingHandler: FunctionHandler(OrderProcessingHandler) };
 ```
 
-## 2. Defining a Trigger with `@Trigger`
+### `DeploymentGroup`
 
-Place a `@Trigger` JSDoc tag directly above a method of your DataConsumer class to expose it as a service entry point. The first parameter of the method is always the data contract.
+This function defines a deployable microservice. It can be applied at the class or method level.
 
 ```javascript
-const { TriggerType } = require('./datalink_helpers');
+const { FunctionHandler, DeploymentGroup, EventSource } = require('./dsl/three_sc_dsl');
 
-/**
- * @DataConsumer
- */
-class OrderProcessor {
-    /**
-     * @Trigger(type="AwsSqsQueue", name="new-orders")
-     * @param {OrderEvent} order
-     * @param {DbConnection} db
-     */
-    async handleNewOrder(order, db) {
-        // Your business logic here...
-    }
+// Apply @DeploymentGroup at the class level
+let OrderProcessingHandler = DeploymentGroup({ serviceName: 'OrderServices', version: 'v2.1' })(
+    class OrderProcessingHandler {
+        // This method is part of "OrderServices" v2.1
+        async processNewOrder(sqsEvent, repo) {
+            // ... logic ...
+        }
 
-    /**
-     * @Trigger(type="Http", name="orders/manual-entry")
-     * @param {OrderEvent} order
-     * @param {Logger} logger
-     */
-    async handleManualOrder(order, logger) {
-        logger.info("Manual order received.");
-        // ...
+        // This method will be individually wrapped to override the group
+        async reprocessOrder(request) {
+            // ... logic ...
+        }
     }
-}
+);
+
+// Override @DeploymentGroup at the method level
+OrderProcessingHandler.prototype.reprocessOrder = EventSource('aws:apigateway:proxy:/tools/reprocess-order/{id}:POST')(
+    DeploymentGroup({ serviceName: 'InternalTools', version: 'v1' })(
+        OrderProcessingHandler.prototype.reprocessOrder
+    )
+);
+
+module.exports = { OrderProcessingHandler: FunctionHandler(OrderProcessingHandler) };
 ```
 
-## 3. Requiring a Pre-Processing Gate with `@Requires`
+### `EventSource`
 
-Use `@Requires` to enforce a gatekeeper, like an authentication check, before your main logic is executed. The handler should be a reference to a function that returns a boolean.
+This is the primary function. It marks a method as a function entry point and defines its trigger with a URN.
+
+#### AWS S3 PUT Event:
 
 ```javascript
-// In your shared hooks library (e.g., hooks/auth.js)
-function validateRequest(request) {
-    // ... check JWT ...
-    return true;
+// In your handler class
+const { EventSource } = require('./dsl/three_sc_dsl');
+
+class FileHandler {
+    // Note: In JS, decorators are functions that wrap other functions.
+    // The DSL is applied after the class definition.
 }
 
-// In your business logic
-const { validateRequest } = require('./hooks/auth');
-
-/**
- * @DataConsumer
- */
-class AdminService {
-    /**
-     * @Trigger(type="Http", name="admin/run-job")
-     * @Requires(handler="validateRequest")
-     * @param {AdminJobPayload} payload
-     */
-    runAdminJob(payload) {
-        // This code only runs if validateRequest returns true.
+FileHandler.prototype.handleNewUpload = EventSource('aws:s3:{customerUploadsBucket}:ObjectCreated:Put')(
+    async function(s3Event, metadataService) {
+        // ... logic to process the new file ...
     }
-}
+);
 ```
 
-**Note**: The handler is specified as a string matching the imported function name.
-
-## 4. Requiring Logging with `@RequiresLogger`
-
-Use `@RequiresLogger` to declaratively add observability. The tool will automatically wrap your trigger method in a try/catch block and call your specified logger function.
+#### Azure HTTP GET Event:
 
 ```javascript
-// In your shared logging library (e.g., loggers/splunk.js)
-function logEvent(payloadOrError) {
-    // Logic to send data to Splunk
-}
+// In your handler class
+const { EventSource } = require('./dsl/three_sc_dsl');
 
-// In your business logic
-const { logEvent } = require('./loggers/splunk');
-const { LoggingAction } = require('./datalink_helpers');
-
-/**
- * @DataConsumer
- */
-class OrderProcessor {
-    /**
-     * @Trigger(type="Http", name="orders")
-     * @RequiresLogger(handler="logEvent", action="OnInbound")
-     * @RequiresLogger(handler="logEvent", action="OnError")
-     * @param {OrderEvent} order
-     */
-    handleNewOrder(order) {
-        // ... your logic ...
+ProductHandler.prototype.getProductById = EventSource('azure:apigateway:proxy:/products/{id}:GET')(
+    async function(context, req) {
+        // ... logic to fetch a product ...
+        return { productId: req.params.id, name: 'Widget' };
     }
-}
+);
 ```
 
-## 5. Trace Logging with `@RequiresResultsLogger`
-
-Use `@RequiresResultsLogger` to get deep insight into your method's execution by logging the state of local variables.
+#### GCP Pub/Sub Event:
 
 ```javascript
-/**
- * @DataConsumer
- */
-class ComplexWorkflow {
-    /**
-     * @Trigger(type="Http", name="workflows/start")
-     * @RequiresResultsLogger(handler="logEvent", variable="validated")
-     * @RequiresResultsLogger(handler="logEvent", variable="enriched")
-     * @param {InitialPayload} payload
-     */
-    startWorkflow(payload) {
-        const validated = this.validate(payload);
-        // The tool will inject a call to logEvent({ validated }) here.
+// In your handler class
+const { EventSource } = require('./dsl/three_sc_dsl');
 
-        const enriched = this.enrich(validated);
-        // The tool will inject a call to logEvent({ enriched }) here.
-
-        this.save(enriched);
+ProductHandler.prototype.onNewProductPublished = EventSource('gcp:pubsub:{newProductsTopic}:MessagePublished')(
+    async function(message, context) {
+        // ... logic to handle the Pub/Sub message ...
     }
-
-    validate(payload) {
-        // Validation logic
-        return payload;
-    }
-
-    enrich(validatedPayload) {
-        // Enrichment logic
-        return validatedPayload;
-    }
-
-    save(enrichedPayload) {
-        // Save logic
-    }
-}
+);
 ```
 
-## Helper File: `datalink_helpers.js`
+## 3. Weaving Cross-Cutting Concerns
 
-The following helper file provides enums and constants for use with the JSDoc directives:
+### `Requires`
+
+Use this to inject a pre-processing gate. The specified handler method must return a `boolean`.
 
 ```javascript
-// 3SC Conduit: JavaScript Helper File
-// Version: 1.0.0
-// Auto-generated by 3SC DataLink. Do not modify.
-//
-// This file provides helper enums for use in JSDoc comment directives.
+// In a separate "hooks/security.js" file...
+class SecurityHooks {
+    validateJwt(req) {
+        console.log('Validating JWT...');
+        return true; // or false
+    }
+}
+module.exports = { SecurityHooks };
 
-/**
- * Defines the event source that will invoke a method.
- * @readonly
- * @enum {string}
- */
-const TriggerType = {
-    Http: "Http",
-    AzureServiceBusQueue: "AzureServiceBusQueue",
-    AwsSqsQueue: "AwsSqsQueue",
-    KafkaTopic: "KafkaTopic",
-    Cron: "Cron",
-    Scaffold: "Scaffold"
-};
+// In your Function Handler...
+const { Requires, EventSource } = require('./dsl/three_sc_dsl');
+const { SecurityHooks } = require('./hooks/security');
 
-/**
- * Defines the logging action to be performed by a @RequiresLogger hook.
- * @readonly
- * @enum {string}
- */
-const LoggingAction = {
-    /**
-     * Logs the inbound payload/DTO at the beginning of the execution.
-     */
-    OnInbound: "OnInbound",
-    /**
-     * Logs the successful return value of the method at the end of execution.
-     */
-    OnOutbound: "OnOutbound",
-    /**
-     * Logs the exception if the method fails.
-     */
-    OnError: "OnError"
-};
+AdminPanelHandler.prototype.getDashboard = Requires({ handler: SecurityHooks, method: 'validateJwt' })(
+    EventSource('azure:apigateway:proxy:/admin/dashboard:GET')(
+        async function(context, req) {
+            // This code only runs if validateJwt returns true.
+        }
+    )
+);
+```
 
-module.exports = {
-    TriggerType,
-    LoggingAction
-};
+### `RequiresLogger`
+
+Use this to inject observability and create an audit trail.
+
+- **LoggingAction.OnInbound:** Logs the request payload before your business logic runs.
+- **LoggingAction.OnError:** Logs any exception that occurs during the pipeline.
+
+```javascript
+// In a separate "hooks/auditing.js" file...
+class AuditLogger {
+    logRequest(payload) {
+        console.log(`AUDIT - Inbound Payload: ${JSON.stringify(payload)}`);
+    }
+    
+    logFailure(error) {
+        console.error(`AUDIT - Critical Failure: ${error.message}`);
+    }
+}
+module.exports = { AuditLogger };
+
+// In your Function Handler...
+const { RequiresLogger, EventSource, LoggingAction } = require('./dsl/three_sc_dsl');
+const { AuditLogger } = require('./hooks/auditing');
+
+PaymentHandler.prototype.processPayment = RequiresLogger({ handler: AuditLogger, action: LoggingAction.OnError })(
+    RequiresLogger({ handler: AuditLogger, action: LoggingAction.OnInbound })(
+        EventSource('aws:sqs:{paymentQueue}:MessageReceived')(
+            async function(event) {
+                // Business logic that might throw an error...
+                throw new Error('Payment gateway timed out');
+            }
+        )
+    )
+);
 ```

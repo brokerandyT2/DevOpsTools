@@ -1,8 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
+﻿using System.Diagnostics;
 using System.Text;
 using System.Threading.Tasks;
 using x3squaredcircles.DesignToken.Generator.Models;
@@ -11,336 +7,187 @@ namespace x3squaredcircles.DesignToken.Generator.Services
 {
     public interface IGitOperationsService
     {
+        // Methods updated to accept the new configuration object
         Task<bool> IsValidGitRepositoryAsync();
-        Task ConfigureGitAuthenticationAsync(DesignTokenConfiguration config);
+        Task ConfigureGitAuthenticationAsync(TokensConfiguration config);
         Task<string?> GetCurrentCommitHashAsync();
+        Task<bool> CommitChangesAsync(string message);
+        // Add other git methods as needed (tagging, branching, etc.)
         Task CreateTagAsync(string tagName, string message);
-        Task<bool> CreateBranchAsync(string branchName);
-        Task<bool> CommitChangesAsync(string message, string? authorName = null, string? authorEmail = null);
-        Task<bool> PushChangesAsync(string? branchName = null);
-        Task<bool> CreatePullRequestAsync(string sourceBranch, string targetBranch, string title, string description);
+        Task PushChangesAsync(string refToPush);
     }
 
     public class GitOperationsService : IGitOperationsService
     {
-        private readonly ILogger<GitOperationsService> _logger;
+        private readonly IAppLogger _logger;
         private readonly string _workingDirectory = "/src";
 
-        public GitOperationsService(ILogger<GitOperationsService> logger)
+        public GitOperationsService(IAppLogger logger)
         {
             _logger = logger;
         }
 
         public async Task<bool> IsValidGitRepositoryAsync()
         {
-            try
-            {
-                var result = await ExecuteGitCommandAsync("rev-parse --git-dir");
-                return result.ExitCode == 0;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Failed to check if directory is a valid git repository");
-                return false;
-            }
+            var result = await ExecuteGitCommandAsync("rev-parse --is-inside-work-tree");
+            return result.ExitCode == 0 && result.Output.Trim() == "true";
         }
 
-        public async Task ConfigureGitAuthenticationAsync(DesignTokenConfiguration config)
+        public async Task ConfigureGitAuthenticationAsync(TokensConfiguration config)
         {
-            try
+            var patToken = Environment.GetEnvironmentVariable("DATALINK_PAT_TOKEN"); // Standardized name
+            if (string.IsNullOrEmpty(patToken))
             {
-                _logger.LogDebug("Configuring git authentication");
-
-                // Set git user (required for commits and tags)
-                var authorName = config.Git.CommitAuthorName ?? "Design Token Generator";
-                var authorEmail = config.Git.CommitAuthorEmail ?? "design-tokens@pipeline.local";
-
-                await ExecuteGitCommandAsync($"config user.name \"{authorName}\"");
-                await ExecuteGitCommandAsync($"config user.email \"{authorEmail}\"");
-
-                // Configure authentication if token is available
-                var token = config.Authentication.PatToken ?? config.Authentication.PipelineToken;
-                if (!string.IsNullOrEmpty(token))
-                {
-                    // Configure credential helper for HTTPS authentication
-                    var repoUrl = config.RepoUrl;
-                    if (repoUrl.StartsWith("https://"))
-                    {
-                        var uri = new Uri(repoUrl);
-                        var authUrl = $"https://{token}@{uri.Host}{uri.PathAndQuery}";
-
-                        // Set remote URL with embedded token
-                        await ExecuteGitCommandAsync($"remote set-url origin \"{authUrl}\"");
-                        _logger.LogDebug("Git authentication configured for HTTPS");
-                    }
-                }
-
-                _logger.LogInformation("✓ Git authentication configured");
+                _logger.LogWarning("No PAT token found in environment. Git push operations will likely fail.");
+                return;
             }
-            catch (Exception ex)
+
+            if (config.RepoUrl.StartsWith("https://"))
             {
-                _logger.LogWarning(ex, "Failed to configure git authentication");
-                throw new DesignTokenException(DesignTokenExitCode.GitOperationFailure,
-                    $"Git authentication configuration failed: {ex.Message}", ex);
+                var uri = new Uri(config.RepoUrl);
+                var authUrl = $"https://x-access-token:{patToken}@{uri.Host}{uri.AbsolutePath}";
+                await ExecuteGitCommandAsync($"remote set-url origin \"{authUrl}\"");
+                _logger.LogInfo("✓ Git authentication configured using PAT token.");
             }
         }
 
         public async Task<string?> GetCurrentCommitHashAsync()
         {
+            var result = await ExecuteGitCommandAsync("rev-parse HEAD");
+            return result.ExitCode == 0 ? result.Output.Trim() : null;
+        }
+
+        public async Task<bool> CommitChangesAsync(string message)
+        {
             try
             {
-                var result = await ExecuteGitCommandAsync("rev-parse HEAD");
-                if (result.ExitCode == 0)
+                var authorName = Environment.GetEnvironmentVariable("GIT_AUTHOR_NAME") ?? "3SC Design Token Generator";
+                var authorEmail = Environment.GetEnvironmentVariable("GIT_AUTHOR_EMAIL") ?? "tools@3sc.com";
+                await ExecuteGitCommandAsync($"config user.name \"{authorName}\"");
+                await ExecuteGitCommandAsync($"config user.email \"{authorEmail}\"");
+
+                await ExecuteGitCommandAsync("add -A");
+
+                var statusResult = await ExecuteGitCommandAsync("diff --cached --quiet");
+                if (statusResult.ExitCode == 0)
                 {
-                    return result.Output.Trim();
+                    _logger.LogInfo("No new design token changes detected to commit.");
+                    return true;
                 }
 
-                _logger.LogWarning("Failed to get current commit hash: {Error}", result.Error);
-                return null;
+                var commitResult = await ExecuteGitCommandAsync($"commit -m \"{message}\"");
+                if (commitResult.ExitCode != 0)
+                {
+                    _logger.LogError($"'git commit' command failed: {commitResult.Error}");
+                    return false;
+                }
+
+                _logger.LogInfo("✓ Changes committed successfully.");
+                return true;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to get current commit hash");
-                return null;
+                _logger.LogError("An unexpected error occurred during the git commit process.", ex);
+                return false;
             }
         }
-
+        // --- NEW: Complete implementation of CreateTagAsync ---
         public async Task CreateTagAsync(string tagName, string message)
         {
             try
             {
-                _logger.LogInformation("Creating git tag: {TagName}", tagName);
+                _logger.LogInfo($"Creating git tag: {tagName}");
 
-                // Check if tag already exists
-                var existingTag = await ExecuteGitCommandAsync($"tag -l \"{tagName}\"");
-                if (!string.IsNullOrWhiteSpace(existingTag.Output))
-                {
-                    _logger.LogWarning("Tag already exists: {TagName}", tagName);
-                    return;
-                }
-
-                // Create annotated tag
                 var result = await ExecuteGitCommandAsync($"tag -a \"{tagName}\" -m \"{message}\"");
                 if (result.ExitCode != 0)
                 {
-                    throw new DesignTokenException(DesignTokenExitCode.GitOperationFailure,
-                        $"Failed to create tag {tagName}: {result.Error}");
+                    // Check if the error is because the tag already exists, which is not a critical failure.
+                    if (result.Error.Contains("already exists"))
+                    {
+                        _logger.LogWarning($"Tag '{tagName}' already exists. Skipping creation.");
+                        return;
+                    }
+                    throw new DesignTokenException(DesignTokenExitCode.GitOperationFailure, $"Failed to create tag '{tagName}': {result.Error}");
                 }
-
-                _logger.LogInformation("✓ Git tag created: {TagName}", tagName);
-
-                // Try to push tag (don't fail if this doesn't work)
-                try
-                {
-                    await ExecuteGitCommandAsync($"push origin \"{tagName}\"");
-                    _logger.LogInformation("✓ Tag pushed to remote: {TagName}", tagName);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to push tag to remote (non-critical): {TagName}", tagName);
-                }
+                _logger.LogInfo($"✓ Git tag created: {tagName}");
             }
-            catch (DesignTokenException)
+            catch (Exception ex)
             {
+                _logger.LogError($"Failed to create git tag '{tagName}'.", ex);
+                if (ex is not DesignTokenException)
+                    throw new DesignTokenException(DesignTokenExitCode.GitOperationFailure, $"Failed to create git tag {tagName}: {ex.Message}", ex);
                 throw;
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to create git tag: {TagName}", tagName);
-                throw new DesignTokenException(DesignTokenExitCode.GitOperationFailure,
-                    $"Failed to create git tag {tagName}: {ex.Message}", ex);
-            }
         }
 
-        public async Task<bool> CreateBranchAsync(string branchName)
+        // --- NEW: Complete implementation of PushChangesAsync ---
+        public async Task PushChangesAsync(string refToPush)
         {
             try
             {
-                _logger.LogInformation("Creating git branch: {BranchName}", branchName);
+                _logger.LogInfo($"Pushing ref '{refToPush}' to remote origin...");
 
-                // Check if branch already exists
-                var existingBranch = await ExecuteGitCommandAsync($"branch -l \"{branchName}\"");
-                if (!string.IsNullOrWhiteSpace(existingBranch.Output))
-                {
-                    _logger.LogInformation("Branch already exists, checking out: {BranchName}", branchName);
-                    var checkoutResult = await ExecuteGitCommandAsync($"checkout \"{branchName}\"");
-                    return checkoutResult.ExitCode == 0;
-                }
-
-                // Create and checkout new branch
-                var result = await ExecuteGitCommandAsync($"checkout -b \"{branchName}\"");
+                var result = await ExecuteGitCommandAsync($"push origin \"{refToPush}\"");
                 if (result.ExitCode != 0)
                 {
-                    _logger.LogError("Failed to create branch {BranchName}: {Error}", branchName, result.Error);
-                    return false;
+                    // Check for common non-critical errors, like an up-to-date ref.
+                    if (result.Error.Contains("up-to-date"))
+                    {
+                        _logger.LogInfo($"Ref '{refToPush}' is already up-to-date on remote origin.");
+                        return;
+                    }
+                    throw new DesignTokenException(DesignTokenExitCode.GitOperationFailure, $"Failed to push '{refToPush}': {result.Error}");
                 }
-
-                _logger.LogInformation("✓ Git branch created and checked out: {BranchName}", branchName);
-                return true;
+                _logger.LogInfo($"✓ Ref '{refToPush}' pushed successfully.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to create git branch: {BranchName}", branchName);
-                return false;
+                _logger.LogError($"Failed to push ref '{refToPush}'.", ex);
+                if (ex is not DesignTokenException)
+                    throw new DesignTokenException(DesignTokenExitCode.GitOperationFailure, $"Failed to push ref {refToPush}: {ex.Message}", ex);
+                throw;
             }
         }
 
-        public async Task<bool> CommitChangesAsync(string message, string? authorName = null, string? authorEmail = null)
+        private async Task<(int ExitCode, string Output, string Error)> ExecuteGitCommandAsync(string arguments)
         {
-            try
+            var process = new Process
             {
-                _logger.LogInformation("Committing changes with message: {Message}", message);
-
-                // Stage all changes
-                var stageResult = await ExecuteGitCommandAsync("add .");
-                if (stageResult.ExitCode != 0)
+                StartInfo = new ProcessStartInfo
                 {
-                    _logger.LogError("Failed to stage changes: {Error}", stageResult.Error);
-                    return false;
+                    FileName = "git",
+                    Arguments = arguments,
+                    WorkingDirectory = _workingDirectory,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
                 }
-
-                // Check if there are any changes to commit
-                var statusResult = await ExecuteGitCommandAsync("diff --cached --quiet");
-                if (statusResult.ExitCode == 0)
-                {
-                    _logger.LogInformation("No changes to commit");
-                    return true; // No changes is not an error
-                }
-
-                // Build commit command
-                var commitCommand = new StringBuilder("commit");
-
-                if (!string.IsNullOrEmpty(authorName) && !string.IsNullOrEmpty(authorEmail))
-                {
-                    commitCommand.Append($" --author=\"{authorName} <{authorEmail}>\"");
-                }
-
-                commitCommand.Append($" -m \"{message}\"");
-
-                // Execute commit
-                var commitResult = await ExecuteGitCommandAsync(commitCommand.ToString());
-                if (commitResult.ExitCode != 0)
-                {
-                    _logger.LogError("Failed to commit changes: {Error}", commitResult.Error);
-                    return false;
-                }
-
-                _logger.LogInformation("✓ Changes committed successfully");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to commit changes");
-                return false;
-            }
-        }
-
-        public async Task<bool> PushChangesAsync(string? branchName = null)
-        {
-            try
-            {
-                var pushCommand = "push origin";
-                if (!string.IsNullOrEmpty(branchName))
-                {
-                    pushCommand += $" \"{branchName}\"";
-                }
-                else
-                {
-                    pushCommand += " HEAD";
-                }
-
-                _logger.LogInformation("Pushing changes to remote: {Command}", pushCommand);
-
-                var result = await ExecuteGitCommandAsync(pushCommand);
-                if (result.ExitCode != 0)
-                {
-                    _logger.LogError("Failed to push changes: {Error}", result.Error);
-                    return false;
-                }
-
-                _logger.LogInformation("✓ Changes pushed to remote successfully");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to push changes");
-                return false;
-            }
-        }
-
-        public async Task<bool> CreatePullRequestAsync(string sourceBranch, string targetBranch, string title, string description)
-        {
-            try
-            {
-                _logger.LogInformation("Creating pull request: {SourceBranch} -> {TargetBranch}", sourceBranch, targetBranch);
-
-                // This is platform-specific and would need to be implemented for each git hosting provider
-                // For now, we'll just log the action and return success
-                _logger.LogWarning("Pull request creation is not implemented - would need platform-specific implementation");
-                _logger.LogInformation("PR Details: {Title} | {Description}", title, description);
-
-                // In a real implementation, this would:
-                // 1. Detect the git hosting platform (GitHub, Azure DevOps, GitLab, etc.)
-                // 2. Use the appropriate API to create the pull request
-                // 3. Return the PR URL or ID
-
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to create pull request");
-                return false;
-            }
-        }
-
-        private async Task<GitCommandResult> ExecuteGitCommandAsync(string arguments)
-        {
-            var processStartInfo = new ProcessStartInfo
-            {
-                FileName = "git",
-                Arguments = arguments,
-                WorkingDirectory = _workingDirectory,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
             };
-
-            using var process = new Process { StartInfo = processStartInfo };
 
             var outputBuilder = new StringBuilder();
             var errorBuilder = new StringBuilder();
 
-            process.OutputDataReceived += (sender, e) => { if (e.Data != null) outputBuilder.AppendLine(e.Data); };
-            process.ErrorDataReceived += (sender, e) => { if (e.Data != null) errorBuilder.AppendLine(e.Data); };
-
             process.Start();
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
+
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
 
             await process.WaitForExitAsync();
 
-            var result = new GitCommandResult
-            {
-                ExitCode = process.ExitCode,
-                Output = outputBuilder.ToString().Trim(),
-                Error = errorBuilder.ToString().Trim()
-            };
+            var output = await outputTask;
+            var error = await errorTask;
 
-            _logger.LogDebug("Git command executed: git {Arguments} | Exit: {ExitCode}", arguments, result.ExitCode);
-            if (result.ExitCode != 0)
+            if (process.ExitCode != 0)
             {
-                _logger.LogDebug("Git command error: {Error}", result.Error);
+                _logger.LogDebug($"Git command failed: git {arguments} | Exit: {process.ExitCode} | Stderr: {error.Trim()}");
+            }
+            else
+            {
+                _logger.LogDebug($"Git command success: git {arguments}");
             }
 
-            return result;
-        }
-
-        private class GitCommandResult
-        {
-            public int ExitCode { get; set; }
-            public string Output { get; set; } = string.Empty;
-            public string Error { get; set; } = string.Empty;
+            return (process.ExitCode, output.Trim(), error.Trim());
         }
     }
 }

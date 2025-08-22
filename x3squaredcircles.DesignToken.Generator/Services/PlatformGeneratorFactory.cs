@@ -1,5 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
-using System;
+﻿using System;
 using System.Threading.Tasks;
 using x3squaredcircles.DesignToken.Generator.Models;
 
@@ -7,55 +6,60 @@ namespace x3squaredcircles.DesignToken.Generator.Services
 {
     public interface IPlatformGeneratorFactory
     {
-        Task<GenerationResult> GenerateAsync(GenerationRequest request);
+        Task<GenerationResult> GenerateAsync(GenerationRequest request, TokensConfiguration config);
     }
 
     public class PlatformGeneratorFactory : IPlatformGeneratorFactory
     {
-        private readonly IAndroidGeneratorService _androidGenerator;
-        private readonly IIosGeneratorService _iosGenerator;
-        private readonly IWebGeneratorService _webGenerator;
-        private readonly ILogger<PlatformGeneratorFactory> _logger;
+        private readonly IServiceProvider _serviceProvider;
+        private readonly IAppLogger _logger;
 
-        public PlatformGeneratorFactory(
-            IAndroidGeneratorService androidGenerator,
-            IIosGeneratorService iosGenerator,
-            IWebGeneratorService webGenerator,
-            ILogger<PlatformGeneratorFactory> logger)
+        public PlatformGeneratorFactory(IServiceProvider serviceProvider, IAppLogger logger)
         {
-            _androidGenerator = androidGenerator;
-            _iosGenerator = iosGenerator;
-            _webGenerator = webGenerator;
+            _serviceProvider = serviceProvider;
             _logger = logger;
         }
 
-        public async Task<GenerationResult> GenerateAsync(GenerationRequest request)
+        public async Task<GenerationResult> GenerateAsync(GenerationRequest request, TokensConfiguration config)
         {
-            var platform = request.Platform.GetSelectedPlatform();
-
-            _logger.LogInformation("Generating design token files for {Platform}", platform.ToUpperInvariant());
+            var platform = config.TargetPlatform;
+            _logger.LogInfo($"Generating design token files for platform: {platform.ToUpperInvariant()}");
 
             try
             {
-                return platform.ToLowerInvariant() switch
-                {
-                    "android" => await _androidGenerator.GenerateAsync(request),
-                    "ios" => await _iosGenerator.GenerateAsync(request),
-                    "web" => await _webGenerator.GenerateAsync(request),
-                    _ => throw new DesignTokenException(DesignTokenExitCode.InvalidConfiguration,
-                        $"Unsupported target platform: {platform}")
-                };
+                var generator = GetGeneratorForPlatform(platform);
+                return await generator.GenerateAsync(request, config);
             }
-            catch (DesignTokenException)
-            {
-                throw;
-            }
+            catch (DesignTokenException) { throw; }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Platform generation failed for: {Platform}", platform);
-                throw new DesignTokenException(DesignTokenExitCode.PlatformGenerationFailure,
-                    $"Failed to generate files for {platform}: {ex.Message}", ex);
+                _logger.LogError($"Platform generation failed for: {platform}", ex);
+                throw new DesignTokenException(DesignTokenExitCode.PlatformGenerationFailure, $"Failed to generate files for {platform}: {ex.Message}", ex);
             }
         }
+
+        private IPlatformGenerator GetGeneratorForPlatform(string platform)
+        {
+            return platform.ToLowerInvariant() switch
+            {
+                "android" => (IPlatformGenerator)_serviceProvider.GetService(typeof(IAndroidGeneratorService))!,
+                "ios" => (IPlatformGenerator)_serviceProvider.GetService(typeof(IIosGeneratorService))!,
+                "web" => (IPlatformGenerator)_serviceProvider.GetService(typeof(IWebGeneratorService))!,
+                _ => throw new DesignTokenException(DesignTokenExitCode.InvalidConfiguration, $"Unsupported target platform: {platform}")
+            };
+        }
     }
+
+    /// <summary>
+    /// A common interface for all platform-specific generator services.
+    /// </summary>
+    public interface IPlatformGenerator
+    {
+        Task<GenerationResult> GenerateAsync(GenerationRequest request, TokensConfiguration config);
+    }
+
+    // Specific generator interfaces now inherit from the common one.
+    public interface IAndroidGeneratorService : IPlatformGenerator { }
+    public interface IIosGeneratorService : IPlatformGenerator { }
+    public interface IWebGeneratorService : IPlatformGenerator { }
 }
